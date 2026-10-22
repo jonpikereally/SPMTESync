@@ -1,7 +1,8 @@
 // Renders the LTC Bridge app icon as PNGs at every size macOS uses: a dark
-// rounded square, an LTC (biphase-mark) square wave in the app's timecode
-// green, and an amber bridge arch over it. Details that would turn to mush at
-// small sizes (hangers, glow) are only drawn where they stay crisp.
+// rounded square holding a timecode display (green seven-segment "01:00",
+// unlit segments faintly visible, like the LED readout on show gear) above a
+// line of LTC in amber. Details that would turn to mush at small sizes (the
+// wave, the colon, glow) are only drawn where they stay crisp.
 //   swiftc tools/make-icon.swift -o make-icon && ./make-icon <out-dir>
 // tools/make-icns.py then packs the PNGs into Resources/AppIcon.icns.
 import CoreGraphics
@@ -11,6 +12,8 @@ import UniformTypeIdentifiers
 
 let outDir = URL(fileURLWithPath: CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "icon-png")
 try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+
+let space = CGColorSpace(name: CGColorSpace.sRGB)!
 
 func rgb(_ hex: UInt32, _ alpha: CGFloat = 1) -> CGColor {
     CGColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255,
@@ -61,7 +64,6 @@ func transitions(bits: [Int], x0: CGFloat, x1: CGFloat) -> [CGFloat] {
 }
 
 /// The square wave through those transitions, starting low, centred on y.
-/// The flat stretch after transition i is high when i is even.
 func squareWave(through xs: [CGFloat], x1: CGFloat, y: CGFloat, amplitude: CGFloat) -> CGPath {
     let path = CGMutablePath()
     var level = y - amplitude
@@ -75,13 +77,52 @@ func squareWave(through xs: [CGFloat], x1: CGFloat, y: CGFloat, amplitude: CGFlo
     return path
 }
 
+/// Slant of the digits, as on an LED display: x shifts by this × height.
+let slant: CGFloat = 0.12
+
+/// One seven-segment digit in a w × h box at `origin`: all seven segments in
+/// `off` (the faint unlit glass), then the lit ones in `on`.
+func drawDigit(_ ctx: CGContext, _ n: Int, origin: CGPoint, w: CGFloat, h: CGFloat, thickness t: CGFloat,
+               on: CGColor, off: CGColor, glow: CGFloat) {
+    let lit: [Int: String] = [0: "abcdef", 1: "bc", 2: "abged", 3: "abgcd", 4: "fgbc",
+                              5: "afgcd", 6: "afgedc", 7: "abc", 8: "abcdefg", 9: "abcdfg"]
+    let gap = t * 0.14
+    func horizontal(_ y: CGFloat) -> CGPath {
+        let x0 = t / 2 + gap, x1 = w - t / 2 - gap
+        let p = CGMutablePath()
+        p.addLines(between: [CGPoint(x: x0, y: y), CGPoint(x: x0 + t / 2, y: y + t / 2), CGPoint(x: x1 - t / 2, y: y + t / 2),
+                             CGPoint(x: x1, y: y), CGPoint(x: x1 - t / 2, y: y - t / 2), CGPoint(x: x0 + t / 2, y: y - t / 2)])
+        p.closeSubpath()
+        return p
+    }
+    func vertical(_ x: CGFloat, _ y0: CGFloat, _ y1: CGFloat) -> CGPath {
+        let p = CGMutablePath()
+        p.addLines(between: [CGPoint(x: x, y: y0), CGPoint(x: x + t / 2, y: y0 + t / 2), CGPoint(x: x + t / 2, y: y1 - t / 2),
+                             CGPoint(x: x, y: y1), CGPoint(x: x - t / 2, y: y1 - t / 2), CGPoint(x: x - t / 2, y: y0 + t / 2)])
+        p.closeSubpath()
+        return p
+    }
+    let segments: [Character: CGPath] = [
+        "a": horizontal(h - t / 2), "g": horizontal(h / 2), "d": horizontal(t / 2),
+        "f": vertical(t / 2, h / 2 + gap, h - t / 2 - gap), "b": vertical(w - t / 2, h / 2 + gap, h - t / 2 - gap),
+        "e": vertical(t / 2, t / 2 + gap, h / 2 - gap), "c": vertical(w - t / 2, t / 2 + gap, h / 2 - gap)]
+    ctx.saveGState()
+    ctx.concatenate(CGAffineTransform(a: 1, b: 0, c: slant, d: 1, tx: origin.x, ty: origin.y))
+    for (_, p) in segments { ctx.addPath(p) }
+    ctx.setFillColor(off)
+    ctx.fillPath()
+    if glow > 0 { ctx.setShadow(offset: .zero, blur: glow, color: on) }
+    for ch in lit[n] ?? "" { if let p = segments[ch] { ctx.addPath(p) } }
+    ctx.setFillColor(on)
+    ctx.fillPath()
+    ctx.restoreGState()
+}
+
 func render(_ px: Int) -> CGImage {
     let s = CGFloat(px)
-    let ctx = CGContext(data: nil, width: px, height: px, bitsPerComponent: 8, bytesPerRow: 0,
-                        space: CGColorSpace(name: CGColorSpace.sRGB)!,
+    let ctx = CGContext(data: nil, width: px, height: px, bitsPerComponent: 8, bytesPerRow: 0, space: space,
                         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
     ctx.setShouldAntialias(true)
-    ctx.interpolationQuality = .high
     let detailed = px >= 128
     let tiny = px <= 32
 
@@ -92,99 +133,68 @@ func render(_ px: Int) -> CGImage {
     if detailed {
         ctx.saveGState()
         ctx.setShadow(offset: CGSize(width: 0, height: -s * 0.012), blur: s * 0.03, color: rgb(0x000000, 0.45))
-        ctx.addPath(shape); ctx.setFillColor(rgb(0x111318)); ctx.fillPath()
+        ctx.addPath(shape); ctx.setFillColor(rgb(0x101215)); ctx.fillPath()
         ctx.restoreGState()
     }
     ctx.saveGState()
     ctx.addPath(shape); ctx.clip()
-    let bg = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB)!,
-                        colors: [rgb(0x2A2F3A), rgb(0x0C0E13)] as CFArray, locations: [0, 1])!
+    let bg = CGGradient(colorsSpace: space, colors: [rgb(0x33373F), rgb(0x101215)] as CFArray, locations: [0, 1])!
     ctx.drawLinearGradient(bg, start: CGPoint(x: s / 2, y: body.maxY), end: CGPoint(x: s / 2, y: body.minY), options: [])
-    // A faint top highlight, like light catching the edge.
-    if detailed {
-        let sheen = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB)!,
-                               colors: [rgb(0xFFFFFF, 0.10), rgb(0xFFFFFF, 0)] as CFArray, locations: [0, 1])!
+    if detailed {   // a faint top highlight, like light catching the edge
+        let sheen = CGGradient(colorsSpace: space, colors: [rgb(0xFFFFFF, 0.10), rgb(0xFFFFFF, 0)] as CFArray, locations: [0, 1])!
         ctx.drawLinearGradient(sheen, start: CGPoint(x: s / 2, y: body.maxY), end: CGPoint(x: s / 2, y: body.midY), options: [])
     }
 
-    // Geometry, in fractions of the body.
-    func X(_ f: CGFloat) -> CGFloat { body.minX + body.width * f }
-    func Y(_ f: CGFloat) -> CGFloat { body.minY + body.height * f }   // 0 = bottom
-    let deckY = Y(0.37)
-    let archLeft = X(0.17), archRight = X(0.83), archTop = Y(0.80)
-    let stroke = body.width * (tiny ? 0.075 : 0.05)
-    let amplitude = body.height * (tiny ? 0.085 : 0.07)
-    let waveStroke = stroke * (tiny ? 1.0 : 0.78)
-    let pierTop = deckY - amplitude - waveStroke * 0.5
-    // Fewer bits as the icon shrinks, so the wave stays a wave.
-    let bits = px <= 16 ? [1, 1] : tiny ? [0, 1, 0] : [0, 1, 0, 0, 1, 0]
-    let waveStart = X(0.07), waveEnd = X(0.93)
-    let edges = transitions(bits: bits, x0: waveStart, x1: waveEnd)
-
-    // Bridge arch: a half ellipse whose legs run down through the deck to
-    // the piers, like a tied-arch bridge the signal passes through.
-    let arch = CGMutablePath()
-    let archCenter = CGPoint(x: (archLeft + archRight) / 2, y: deckY)
-    let rx = (archRight - archLeft) / 2, ry = archTop - deckY
-    let segments = 180
-    arch.move(to: CGPoint(x: archLeft, y: pierTop))
-    for i in 0...segments {
-        let t = CGFloat.pi * CGFloat(i) / CGFloat(segments)
-        arch.addLine(to: CGPoint(x: archCenter.x - rx * cos(t), y: archCenter.y + ry * sin(t)))
+    // The display window.
+    let window = CGRect(x: body.minX + body.width * 0.10, y: body.minY + body.height * (tiny ? 0.24 : 0.30),
+                        width: body.width * 0.80, height: body.height * (tiny ? 0.52 : 0.40))
+    let windowPath = CGPath(roundedRect: window, cornerWidth: body.width * 0.06, cornerHeight: body.width * 0.06, transform: nil)
+    ctx.addPath(windowPath); ctx.setFillColor(rgb(0x030504)); ctx.fillPath()
+    if !tiny {
+        ctx.addPath(windowPath); ctx.setStrokeColor(rgb(0x3A404A)); ctx.setLineWidth(body.width * 0.008); ctx.strokePath()
     }
-    arch.addLine(to: CGPoint(x: archRight, y: pierTop))
 
-    // Hangers from the arch down to the wave, one over the middle of each
-    // flat stretch under the arch, ending wherever the wave is there.
-    if detailed {
-        ctx.setStrokeColor(rgb(0xFFB020, 0.55))
-        ctx.setLineWidth(body.width * 0.012)
-        ctx.setLineCap(.round)
-        for i in 0..<(edges.count - 1) {
-            let x = (edges[i] + edges[i + 1]) / 2
-            guard x > X(0.26) && x < X(0.74) else { continue }
-            let bottom = i.isMultiple(of: 2) ? deckY + amplitude : deckY - amplitude
-            let u = (x - archCenter.x) / rx
-            let top = archCenter.y + ry * sqrt(max(0, 1 - u * u))
-            ctx.move(to: CGPoint(x: x, y: bottom))
-            ctx.addLine(to: CGPoint(x: x, y: top - stroke * 0.4))
+    // "01:00" (the hour most shows start at), or just "00" where four digits won't fit.
+    let digits = tiny ? [0, 0] : [0, 1, 0, 0]
+    let unlit = rgb(0x32D74B, 0.08)
+    let glow = detailed ? body.width * 0.03 : 0
+    let colon = tiny ? 0 : window.width * 0.07
+    let cell = (window.width * 0.80 - colon) / CGFloat(digits.count)
+    let dw = cell * 0.84, gap = cell * 0.16
+    let dh = window.height * 0.62
+    let t = dw * (tiny ? 0.30 : 0.22)
+    var x = window.minX + window.width * 0.09
+    let y = window.midY - dh / 2
+    for (i, d) in digits.enumerated() {
+        drawDigit(ctx, d, origin: CGPoint(x: x, y: y), w: dw, h: dh, thickness: t, on: green, off: unlit, glow: glow)
+        x += dw + gap
+        if !tiny && i == 1 {
+            ctx.saveGState()
+            if glow > 0 { ctx.setShadow(offset: .zero, blur: glow, color: green) }
+            ctx.setFillColor(green)
+            for fy in [0.32, 0.68] as [CGFloat] {
+                // Centred between the digits, leaning with their slant.
+                let r = t * 0.42
+                let cx = x + (colon - gap) / 2 + slant * dh * fy
+                ctx.fillEllipse(in: CGRect(x: cx - r, y: y + dh * fy - r, width: 2 * r, height: 2 * r))
+            }
+            ctx.restoreGState()
+            x += colon
         }
+    }
+
+    // A line of LTC under the display, in amber.
+    if !tiny {
+        let x0 = body.minX + body.width * 0.16, x1 = body.minX + body.width * 0.84
+        let wave = squareWave(through: transitions(bits: [0, 1, 0, 0, 1, 0, 1, 0], x0: x0, x1: x1), x1: x1,
+                              y: body.minY + body.height * 0.17, amplitude: body.height * 0.035)
+        ctx.addPath(wave)
+        ctx.setStrokeColor(amber)
+        ctx.setLineWidth(body.width * 0.022)
+        ctx.setLineJoin(.round)
+        ctx.setLineCap(.round)
         ctx.strokePath()
     }
-
-    ctx.addPath(arch)
-    ctx.setStrokeColor(amber)
-    ctx.setLineWidth(stroke)
-    ctx.setLineCap(.butt)
-    ctx.setLineJoin(.round)
-    ctx.strokePath()
-
-    // Piers under the arch's legs.
-    if !tiny {
-        ctx.setFillColor(amber)
-        for x in [archLeft, archRight] {
-            let w = stroke * 1.7, h = body.height * 0.13
-            ctx.addPath(CGPath(roundedRect: CGRect(x: x - w / 2, y: pierTop - h, width: w, height: h + 1),
-                               cornerWidth: w * 0.22, cornerHeight: w * 0.22, transform: nil))
-        }
-        ctx.fillPath()
-    }
-
-    // The LTC signal running across the deck, in the readout's green.
-    let wave = squareWave(through: edges, x1: waveEnd, y: deckY, amplitude: amplitude)
-    if detailed {
-        ctx.saveGState()
-        ctx.setShadow(offset: .zero, blur: s * 0.035, color: rgb(0x32D74B, 0.85))
-        ctx.addPath(wave); ctx.setStrokeColor(green); ctx.setLineWidth(waveStroke)
-        ctx.setLineJoin(.round); ctx.setLineCap(.round); ctx.strokePath()
-        ctx.restoreGState()
-    }
-    ctx.addPath(wave)
-    ctx.setStrokeColor(green)
-    ctx.setLineWidth(waveStroke)
-    ctx.setLineJoin(.round)
-    ctx.setLineCap(.round)
-    ctx.strokePath()
 
     ctx.restoreGState()
     return ctx.makeImage()!
