@@ -1,0 +1,2 @@
+• New: send MTC over the network (Apple network MIDI / RTP-MIDI) to other Macs or to Windows PCs running rtpMIDI. Turn on "Network", then connect out to an address or let other machines connect in. Connections you add are reconnected automatically.
+• The decoder recovers faster when noise comes before the LTC starts.
