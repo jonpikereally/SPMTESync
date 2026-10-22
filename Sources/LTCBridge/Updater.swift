@@ -25,6 +25,8 @@ final class Updater {
     /// True once the swap helper is running and the app is quitting for it,
     /// so the "timecode will stop" quit confirmation is skipped.
     private(set) var installing = false
+    /// Includes download and preparation, so every install control can be disabled.
+    private(set) var isPreparingInstall = false
 
     /// User override first, then the feed baked in at build time.
     var feed: String? {
@@ -113,14 +115,28 @@ final class Updater {
     /// script that swaps the app bundle once this process has quit and
     /// relaunches it. Completion only runs on failure.
     func install(_ manifest: UpdateManifest, completion: @escaping (Error) -> Void) {
+        precondition(Thread.isMainThread)
+        guard !isPreparingInstall else { return }
         guard let feed, let feedURL = Self.url(from: feed),
               let zipURL = URL(string: manifest.url, relativeTo: feedURL)?.absoluteURL
         else { completion(AppError(.noUpdateSource)); return }
+        isPreparingInstall = true
+        onChange()
 
         DispatchQueue.global(qos: .userInitiated).async {
+            let fm = FileManager.default
+            let work = fm.temporaryDirectory
+                .appendingPathComponent("LTCBridge-update-\(UUID().uuidString)", isDirectory: true)
+            let destination = Bundle.main.bundleURL
+            // Staging beside the app makes the final rename atomic on its volume.
+            let stagingRoot = destination.deletingLastPathComponent()
+                .appendingPathComponent(".LTCBridge-install-\(UUID().uuidString)", isDirectory: true)
+            var handedOff = false
+            defer {
+                try? fm.removeItem(at: work)
+                if !handedOff { try? fm.removeItem(at: stagingRoot) }
+            }
             do {
-                let work = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("LTCBridge-update-\(UUID().uuidString)", isDirectory: true)
                 let zip = work.appendingPathComponent("update.zip")
                 do {
                     try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
@@ -141,35 +157,37 @@ final class Updater {
                 guard let newApp = Self.findApp(in: work) else {
                     throw AppError(.updateMissingApp, zipURL.absoluteString)
                 }
-                let newBundle = Bundle(url: newApp)
-                guard newBundle?.bundleIdentifier == Bundle.main.bundleIdentifier else {
-                    throw AppError(.updateWrongApp,
-                                   "bundle ID \(newBundle?.bundleIdentifier ?? "none"), expected \(Bundle.main.bundleIdentifier ?? "?")")
-                }
-                guard let exe = newBundle?.executableURL,
-                      FileManager.default.isExecutableFile(atPath: exe.path) else {
-                    throw AppError(.updateDamagedApp, "no executable inside \(newApp.lastPathComponent)")
-                }
-
-                let script = work.appendingPathComponent("swap.sh")
+                let stagedApp = stagingRoot.appendingPathComponent("LTC Bridge.app", isDirectory: true)
+                let script = stagingRoot.appendingPathComponent("InstallBundle.sh")
+                let bundleID = Bundle.main.bundleIdentifier ?? "com.jonpike.ltcbridge"
                 do {
-                    try Self.swapScript.write(to: script, atomically: false, encoding: .utf8)
+                    // Use the running app's trusted helper, never one from the download.
+                    guard let trustedScript = Bundle.main.url(forResource: "InstallBundle", withExtension: "sh") else {
+                        throw AppError(.updateInstallerFailed, "The installed app is missing its update helper.")
+                    }
+                    try fm.createDirectory(at: stagingRoot, withIntermediateDirectories: false)
+                    try fm.copyItem(at: trustedScript, to: script)
+                    try Self.prepare(script: script, app: newApp, stagedApp: stagedApp,
+                                     bundleID: bundleID, version: manifest.version)
                     let helper = Process()
                     helper.executableURL = URL(fileURLWithPath: "/bin/bash")
-                    helper.arguments = [script.path,
+                    helper.arguments = [script.path, "swap",
                                         String(ProcessInfo.processInfo.processIdentifier),
-                                        newApp.path,
-                                        Bundle.main.bundleURL.path,
-                                        Bundle.main.bundleIdentifier ?? "com.jonpike.ltcbridge",
-                                        Self.swapFailureMarker.path]
+                                        stagedApp.path, destination.path, bundleID,
+                                        Self.swapFailureMarker.path, manifest.version]
                     try helper.run()
+                    handedOff = true
                 } catch {
-                    throw AppError(.updateInstallerFailed, error.localizedDescription)
+                    throw AppError(wrapping: error, as: .updateInstallerFailed)
                 }
 
                 DispatchQueue.main.async { self.installing = true; NSApp.terminate(nil) }
             } catch {
-                DispatchQueue.main.async { completion(AppError(wrapping: error)) }
+                DispatchQueue.main.async {
+                    self.isPreparingInstall = false
+                    self.onChange()
+                    completion(AppError(wrapping: error))
+                }
             }
         }
     }
@@ -211,6 +229,24 @@ final class Updater {
         }
     }
 
+    private static func prepare(script: URL, app: URL, stagedApp: URL, bundleID: String, version: String) throws {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
+        p.arguments = [script.path, "prepare", app.path, stagedApp.path, bundleID, version]
+        let output = Pipe()
+        p.standardOutput = output
+        p.standardError = output
+        try p.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        guard p.terminationStatus == 0 else {
+            let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let parts = text.split(separator: "|", maxSplits: 1).map(String.init)
+            let code = parts.first.flatMap(ErrorCode.init(rawValue:)) ?? .updateInstallerFailed
+            throw AppError(code, parts.count == 2 ? parts[1] : text)
+        }
+    }
+
     private static func findApp(in dir: URL) -> URL? {
         guard let e = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: nil) else { return nil }
         for case let url as URL in e {
@@ -228,29 +264,4 @@ final class Updater {
             .appendingPathComponent("update-failed.txt")
     }()
 
-    /// Waits for the old process to exit, swaps bundles, and relaunches. The
-    /// installed app is only removed once the new one is fully copied; if the
-    /// copy fails, the old one is moved back. The Microphone reset matters:
-    /// an ad-hoc-signed rebuild invalidates the old grant while System Settings
-    /// still shows it switched on, so we clear it and let the new build ask.
-    private static let swapScript = """
-    #!/bin/bash
-    PID="$1"; NEW="$2"; DEST="$3"; BID="$4"; MARKER="$5"
-    fail() { mkdir -p "$(dirname "$MARKER")"; printf '%s|%s' "$1" "$2" > "$MARKER"; }
-    for _ in $(seq 1 150); do kill -0 "$PID" 2>/dev/null || break; sleep 0.2; done
-    rm -rf "$DEST.old"
-    if ! mv "$DEST" "$DEST.old" 2>/dev/null; then
-        fail "LB-112" "couldn't move $DEST aside to make room for the new version"
-    elif ! /usr/bin/ditto --norsrc "$NEW" "$DEST" 2>/dev/null; then
-        rm -rf "$DEST"
-        mv "$DEST.old" "$DEST"
-        fail "LB-112" "couldn't copy the new version into $DEST"
-    else
-        rm -rf "$DEST.old"
-        /usr/bin/tccutil reset Microphone "$BID" >/dev/null 2>&1
-    fi
-    /usr/bin/xattr -dr com.apple.quarantine "$DEST" 2>/dev/null
-    /usr/bin/codesign --force --sign - "$DEST" 2>/dev/null
-    /usr/bin/open "$DEST"
-    """
 }

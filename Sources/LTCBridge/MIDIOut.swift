@@ -15,6 +15,51 @@ struct MIDIDestinationInfo: Identifiable, Hashable {
 final class MIDIOut {
     static let sourceName = "LTC Bridge"
 
+    /// CoreMIDI calls are grouped here so failures can be exercised without a
+    /// running MIDI server. Production always uses the system implementation.
+    struct Backend {
+        var makeClient: () -> (OSStatus, MIDIClientRef)
+        var makeSource: (MIDIClientRef) -> (OSStatus, MIDIEndpointRef)
+        var makePort: (MIDIClientRef) -> (OSStatus, MIDIPortRef)
+        var findDestination: (MIDIUniqueID) -> MIDIEndpointRef?
+        var receive: (MIDIEndpointRef, UnsafePointer<MIDIPacketList>) -> OSStatus
+        var send: (MIDIPortRef, MIDIEndpointRef, UnsafePointer<MIDIPacketList>) -> OSStatus
+        var disposeClient: (MIDIClientRef) -> Void
+        var disposeSource: (MIDIEndpointRef) -> Void
+        var disposePort: (MIDIPortRef) -> Void
+
+        static let coreMIDI = Backend(
+            makeClient: {
+                var client = MIDIClientRef()
+                let status = MIDIClientCreateWithBlock("LTC Bridge" as CFString, &client) { _ in }
+                return (status, client)
+            },
+            makeSource: { client in
+                var source = MIDIEndpointRef()
+                let status = MIDISourceCreate(client, MIDIOut.sourceName as CFString, &source)
+                // Keep the same identity across launches so Logic remembers the port.
+                if status == noErr { MIDIObjectSetIntegerProperty(source, kMIDIPropertyUniqueID, 0x4C54_4342) }
+                return (status, source)
+            },
+            makePort: { client in
+                var port = MIDIPortRef()
+                let status = MIDIOutputPortCreate(client, "MTC Out" as CFString, &port)
+                return (status, port)
+            },
+            findDestination: { uid in
+                var obj = MIDIObjectRef()
+                var type = MIDIObjectType.other
+                guard MIDIObjectFindByUniqueID(uid, &obj, &type) == noErr, type == .destination else { return nil }
+                return obj
+            },
+            receive: { MIDIReceived($0, $1) },
+            send: { MIDISend($0, $1, $2) },
+            disposeClient: { MIDIClientDispose($0) },
+            disposeSource: { MIDIEndpointDispose($0) },
+            disposePort: { MIDIPortDispose($0) })
+    }
+
+    private let backend: Backend
     private var client = MIDIClientRef()
     private var source = MIDIEndpointRef()
     private var port = MIDIPortRef()
@@ -22,22 +67,45 @@ final class MIDIOut {
     private var networkDestination: MIDIEndpointRef = 0
     private let lock = NSLock()
     private var packetBuffer = [UInt8](repeating: 0, count: 1024)
-    private(set) var sendFailures = 0
-    private(set) var lastSendError: OSStatus = noErr
+    private var failureCount = 0
+    private var sendError: OSStatus = noErr
+
+    var sendFailures: Int {
+        lock.lock(); defer { lock.unlock() }
+        return failureCount
+    }
+
+    var lastSendError: OSStatus {
+        lock.lock(); defer { lock.unlock() }
+        return sendError
+    }
 
     struct SetupError: Error { let step: String; let status: OSStatus }
 
     var sourceEndpoint: MIDIEndpointRef { source }
 
-    init() throws {
-        var s = MIDIClientCreateWithBlock("LTC Bridge" as CFString, &client) { _ in }
-        guard s == noErr else { throw SetupError(step: "create MIDI client", status: s) }
-        s = MIDISourceCreate(client, Self.sourceName as CFString, &source)
-        guard s == noErr else { throw SetupError(step: "create the “LTC Bridge” MIDI source", status: s) }
-        // Keep the same identity across launches so Logic remembers the port.
-        MIDIObjectSetIntegerProperty(source, kMIDIPropertyUniqueID, 0x4C54_4342)  // "LTCB"
-        s = MIDIOutputPortCreate(client, "MTC Out" as CFString, &port)
-        guard s == noErr else { throw SetupError(step: "create MIDI output port", status: s) }
+    init(backend: Backend = .coreMIDI) throws {
+        self.backend = backend
+        do {
+            var status: OSStatus
+            (status, client) = backend.makeClient()
+            guard status == noErr else { throw SetupError(step: "create MIDI client", status: status) }
+            (status, source) = backend.makeSource(client)
+            guard status == noErr else { throw SetupError(step: "create the “LTC Bridge” MIDI source", status: status) }
+            (status, port) = backend.makePort(client)
+            guard status == noErr else { throw SetupError(step: "create MIDI output port", status: status) }
+        } catch {
+            dispose()
+            throw error
+        }
+    }
+
+    deinit { dispose() }
+
+    private func dispose() {
+        if port != 0 { backend.disposePort(port); port = 0 }
+        if source != 0 { backend.disposeSource(source); source = 0 }
+        if client != 0 { backend.disposeClient(client); client = 0 }
     }
 
     static func destinations() -> [MIDIDestinationInfo] {
@@ -59,10 +127,8 @@ final class MIDIOut {
         lock.lock(); defer { lock.unlock() }
         destination = 0
         guard uid != 0 else { return true }
-        var obj = MIDIObjectRef()
-        var type = MIDIObjectType.other
-        guard MIDIObjectFindByUniqueID(uid, &obj, &type) == noErr, type == .destination else { return false }
-        destination = obj
+        guard let endpoint = backend.findDestination(uid) else { return false }
+        destination = endpoint
         return true
     }
 
@@ -81,10 +147,17 @@ final class MIDIOut {
                 guard let p = packet else { break }
                 packet = MIDIPacketListAdd(list, raw.count, p, 0, m.count, m)
             }
-            var s = MIDIReceived(source, list)
-            if s == noErr, destination != 0 { s = MIDISend(port, destination, list) }
-            if s == noErr, networkDestination != 0 { s = MIDISend(port, networkDestination, list) }
-            if s != noErr { sendFailures += 1; lastSendError = s }
+            var firstError = backend.receive(source, UnsafePointer(list))
+            if destination != 0 {
+                let status = backend.send(port, destination, UnsafePointer(list))
+                if firstError == noErr { firstError = status }
+            }
+            // A destination may also be the selected network session. Send once.
+            if networkDestination != 0, networkDestination != destination {
+                let status = backend.send(port, networkDestination, UnsafePointer(list))
+                if firstError == noErr { firstError = status }
+            }
+            if firstError != noErr { failureCount += 1; sendError = firstError }
         }
     }
 }

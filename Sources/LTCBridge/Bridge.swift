@@ -11,13 +11,14 @@ import Foundation
 /// generator is shared, so every touch of it holds `genLock`.
 final class Bridge: ObservableObject {
     enum Status: Equatable {
-        case noPermission, noDevice, inputFailed, noSignal, noLTC, locking, running, freewheeling, relocating
+        case noPermission, noDevice, inputFailed, midiFailed, noSignal, noLTC, locking, running, freewheeling, relocating
 
         var text: String {
             switch self {
             case .noPermission: return "No permission to use audio input (\(ErrorCode.microphoneDenied.rawValue))"
             case .noDevice: return "Input not connected (\(ErrorCode.inputDeviceMissing.rawValue)) — waiting for it"
             case .inputFailed: return "Couldn't open the input (\(ErrorCode.inputStartFailed.rawValue)) — retrying"
+            case .midiFailed: return "MIDI unavailable (\(ErrorCode.midiSetupFailed.rawValue)) — retrying"
             case .noSignal: return "No signal on this channel"
             case .noLTC: return "Signal present, but it isn't LTC"
             case .locking: return "Locking…"
@@ -27,7 +28,7 @@ final class Bridge: ObservableObject {
             }
         }
 
-        var hasErrorCode: Bool { self == .noPermission || self == .noDevice || self == .inputFailed }
+        var hasErrorCode: Bool { self == .noPermission || self == .noDevice || self == .inputFailed || self == .midiFailed }
         var sendingMTC: Bool { self == .running || self == .freewheeling || self == .relocating }
     }
 
@@ -94,7 +95,7 @@ final class Bridge: ObservableObject {
 
     private let input = AudioInput()
     private let testSource = TestSignalSource()
-    private let network = NetworkMIDI()
+    private lazy var network = NetworkMIDI()
     private var watchdogTicks = 0
     private var networkWaitingSince: Date?
     private var decoder: LTCDecoder?
@@ -102,7 +103,11 @@ final class Bridge: ObservableObject {
     private let gen = MTCGenerator()
     private let genLock = NSLock()
     private var midi: MIDIOut?
+    private let midiFactory: () throws -> MIDIOut
+    private var lastMIDISetupError: String?
     private var senderRunning = true
+    private var senderStarted = false
+    private let senderFinished = DispatchSemaphore(value: 0)
     private var permission: AVAuthorizationStatus = .notDetermined
     private var lastStartError: String?
     private var lastSendFailures = 0
@@ -118,9 +123,11 @@ final class Bridge: ObservableObject {
     private var forcedRate: FrameRate?
     private var sentCount = 0   // written by the sender thread
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
 
-    init() {
+    init(defaults: UserDefaults = .standard, midiFactory: @escaping () throws -> MIDIOut = { try MIDIOut() }) {
+        self.defaults = defaults
+        self.midiFactory = midiFactory
         deviceUID = defaults.string(forKey: "deviceUID") ?? ""
         channel = defaults.object(forKey: "channel") as? Int ?? 0
         rateChoice = defaults.object(forKey: "rateChoice") as? Int ?? -1
@@ -152,13 +159,7 @@ final class Bridge: ObservableObject {
             options: [.userInitiated, .latencyCritical, .idleSystemSleepDisabled],
             reason: "Converting LTC to MTC")
 
-        do {
-            midi = try MIDIOut()
-        } catch let e as MIDIOut.SetupError {
-            ErrorReporter.shared.report(AppError(.midiSetupFailed, "\(e.step) failed (OSStatus \(e.status))"), surface: .alert)
-        } catch {
-            ErrorReporter.shared.report(AppError(.midiSetupFailed, error.localizedDescription), surface: .alert)
-        }
+        retryMIDI()
         applyGeneratorSettings()
         refreshDevices()
         if deviceUID.isEmpty {
@@ -264,8 +265,15 @@ final class Bridge: ObservableObject {
     private func ltcFrame(_ f: LTCFrame, sampleRate sr: Double) {
         let t = bufferHost + (f.endSample - bufferBase) / sr
         genLock.lock()
-        detector.observe(f, sampleRate: sr)
-        let r = forcedRate ?? detector.rate ?? (f.dropFrameFlag ? .fps2997DF : .fps25)
+        let usable = detector.observe(f, sampleRate: sr)
+        let r: FrameRate
+        if let forcedRate {
+            r = forcedRate
+            guard f.timecode.frames < r.framesPerSecond else { genLock.unlock(); return }
+        } else {
+            guard usable, let detected = detector.rate else { genLock.unlock(); return }
+            r = detected
+        }
         gen.rate = r
         gen.ltcFrame(f.timecode.frameNumber(r), endTime: t)
         lastTimecode = f.timecode
@@ -275,20 +283,56 @@ final class Bridge: ObservableObject {
 
     // MARK: MIDI
 
+    /// Main thread. Recover from a temporarily unavailable CoreMIDI service.
+    func retryMIDI() {
+        guard midi == nil else { return }
+        do {
+            let output = try midiFactory()
+            _ = output.setDestination(extraDestination)
+            if networkEnabled, network.isEnabled { output.setNetworkDestination(network.destination) }
+            genLock.lock()
+            gen.requestLocate()
+            midi = output
+            genLock.unlock()
+            lastMIDISetupError = nil
+            lastSendFailures = 0
+            ErrorReporter.shared.resolve(.midiSetupFailed)
+            applyDestination()
+        } catch {
+            let detail: String
+            if let e = error as? MIDIOut.SetupError {
+                detail = "\(e.step) failed (OSStatus \(e.status))"
+            } else {
+                detail = error.localizedDescription
+            }
+            if detail != lastMIDISetupError {
+                lastMIDISetupError = detail
+                ErrorReporter.shared.report(AppError(.midiSetupFailed, detail), surface: .banner)
+            }
+        }
+    }
+
     private func startSender() {
+        senderStarted = true
         let thread = Thread { [weak self] in
+            guard let self else { return }
+            defer { self.senderFinished.signal() }
             let policy = Self.makeRealtime()
             if policy != KERN_SUCCESS {
                 ErrorReporter.shared.report(AppError(.realtimeRefused, "thread_policy_set returned \(policy)"), surface: .banner)
             }
-            while let self, self.senderRunning {
+            while true {
                 let now = HostClock.now()
                 self.genLock.lock()
+                guard self.senderRunning else { self.genLock.unlock(); break }
                 let (messages, next) = self.gen.poll(now: now)
+                let output = self.midi
                 self.genLock.unlock()
-                if !messages.isEmpty {
-                    self.midi?.send(messages)
+                if !messages.isEmpty, let output {
+                    output.send(messages)
+                    self.genLock.lock()
                     self.sentCount += messages.count
+                    self.genLock.unlock()
                 }
                 let wake = min(next, now + 0.005)
                 if wake > now { mach_wait_until(HostClock.ticks(wake)) }
@@ -425,7 +469,7 @@ final class Bridge: ObservableObject {
 
     // MARK: Status sampling (main thread)
 
-    private func sampleState() {
+    func sampleState() {
         let now = HostClock.now()
         genLock.lock()
         let genStatus = gen.status
@@ -434,6 +478,8 @@ final class Bridge: ObservableObject {
         let jumps = gen.jumps
         let tc = lastTimecode
         let detected = forcedRate ?? detector.rate
+        let outputReady = midi != nil
+        let sent = sentCount
         genLock.unlock()
 
         let dec = decoder
@@ -442,11 +488,13 @@ final class Bridge: ObservableObject {
         framesDecoded = dec?.framesDecoded ?? 0
         syncErrors = dec?.syncErrors ?? 0
         relocates = max(0, jumps)
-        mtcMessages = sentCount
+        mtcMessages = sent
         rate = detected
 
         let newStatus: Status
-        if testSignal {
+        if !outputReady {
+            newStatus = .midiFailed
+        } else if testSignal {
             switch genStatus {
             case .running, .freewheeling: newStatus = .running
             case .relocating: newStatus = .relocating
@@ -479,9 +527,10 @@ final class Bridge: ObservableObject {
         if display != text { display = text }
     }
 
-    private func watchdog() {
+    func watchdog() {
         refreshDevices()
         watchdogTicks += 1
+        retryMIDI()
         if networkEnabled {
             if !network.isEnabled {
                 applyNetwork()      // someone switched the session off in Audio MIDI Setup
@@ -533,10 +582,18 @@ final class Bridge: ObservableObject {
     }
 
     func stop() {
+        genLock.lock()
         senderRunning = false
+        genLock.unlock()
         input.stop()
         testSource.stop()
+        if senderStarted {
+            // A stuck MIDI driver must not prevent quitting. The sender keeps
+            // self alive until its current send returns and it sees cancellation.
+            _ = senderFinished.wait(timeout: .now() + 1)
+            senderStarted = false
+        }
         timers.forEach { $0.invalidate() }
-        if let activity { ProcessInfo.processInfo.endActivity(activity) }
+        if let activity { ProcessInfo.processInfo.endActivity(activity); self.activity = nil }
     }
 }

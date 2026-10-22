@@ -106,6 +106,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Updates
 
     private func refreshUpdateItem() {
+        let preparing = Updater.shared.isPreparingInstall
+        state.preparingUpdate = preparing
+        updateMenuItem.isEnabled = !preparing
+        if preparing { updateMenuItem.title = "Installing Update…"; return }
         if let m = Updater.shared.available {
             updateMenuItem.title = "⬆︎ Install Update to v\(m.version)…"
             state.updateVersion = m.version
