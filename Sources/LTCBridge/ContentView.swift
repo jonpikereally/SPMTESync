@@ -79,6 +79,7 @@ struct ContentView: View {
         switch bridge.status {
         case .running: return .green
         case .freewheeling: return .orange
+        case .relocating: return .blue
         case .locking: return .yellow
         case .noLTC, .noSignal: return .secondary
         case .noPermission, .noDevice, .inputFailed: return .red
@@ -152,6 +153,17 @@ struct ContentView: View {
                         .monospacedDigit()
                 }
                 .help("If the LTC drops out, keep sending MTC this long so Logic doesn't stop on a glitch. When it runs out, Logic stops.")
+            }
+            GridRow {
+                label("On a jump")
+                Picker("", selection: $bridge.relocatePause) {
+                    Text("Stop MTC 0.25 s, then restart").tag(0.25)
+                    Text("Stop MTC 0.5 s, then restart").tag(0.5)
+                    Text("Stop MTC 1 s, then restart").tag(1.0)
+                    Text("Keep running, just relocate").tag(0.0)
+                }
+                .labelsHidden()
+                .help("When the incoming timecode jumps (a cue change, or scrubbing the source), briefly stopping MTC makes Logic stop, locate and start again cleanly. Keeping it running relocates instantly, but Logic may take several seconds to settle on the right speed.")
             }
             GridRow {
                 label("Offset")

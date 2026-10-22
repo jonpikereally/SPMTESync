@@ -148,13 +148,14 @@ struct Result {
 /// arrives in buffers (plus processing delay), the sender thread polls every
 /// `tick` seconds.
 func simulate(_ sig: LTCSignal, buffer: Int = 512, latency: Double = 0.003, tick: Double = 0.0005,
-              freewheel: Double = 0.4, offset: Double = 0) -> Result {
+              freewheel: Double = 0.4, offset: Double = 0, relocatePause: Double = 0) -> Result {
     let (samples, _) = sig.render()
     let decoder = LTCDecoder(sampleRate: sig.sampleRate)
     let gen = MTCGenerator()
     gen.rate = sig.rate
     gen.freewheel = freewheel
     gen.offset = offset
+    gen.relocatePause = relocatePause
     var res = Result()
     var detector = RateDetector()
     decoder.onFrame = { f in
@@ -357,6 +358,26 @@ do {
         check(ff.tc.hours == 2 && ff.tc.minutes == 0 && ff.tc.seconds == 0, "jump: relocated to \(ff.tc.formatted())")
     }
     checkMTC(sig, res, segment: 1, name: "jump, after", from: 0.05 + 4 + 0.2)
+}
+
+print("jump with stop-then-restart (0.5 s pause)")
+do {
+    let sig = LTCSignal(rate: .fps25, speed: 25, sampleRate: 48_000,
+                        segments: [(tc(1, 0, 5, 0, .fps25), 100), (tc(2, 0, 0, 0, .fps25), 150)])
+    let res = simulate(sig, relocatePause: 0.5)
+    let jumpAt = 0.05 + 4.0
+    let during = res.receiver.qfTimes.filter { $0 > jumpAt + 0.08 && $0 < jumpAt + 0.5 }
+    check(during.isEmpty, "pause: \(during.count) quarter frames sent during the pause")
+    check(res.maxStatusTransitions.contains(.relocating), "pause: never reported relocating")
+    check(res.receiver.fullFrames.count == 2, "pause: \(res.receiver.fullFrames.count) full frames, expected 2")
+    if res.receiver.fullFrames.count == 2 {
+        let ff = res.receiver.fullFrames[1]
+        check(ff.time >= jumpAt + 0.45 && ff.time < jumpAt + 0.65, "pause: restart came \(ff.time - jumpAt) s after the jump")
+        let expect = truePosition(sig, segment: 1, at: ff.time)
+        let got = Double(ff.tc.frameNumber(.fps25))
+        check(abs(got - expect) <= 1.5, "pause: restarted at \(ff.tc.formatted()), expected about frame \(expect)")
+    }
+    checkMTC(sig, res, segment: 1, name: "pause, after", from: jumpAt + 0.8)
 }
 
 print(failures == 0 ? "\nAll tests passed." : "\n\(failures) check(s) failed.")

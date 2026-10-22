@@ -1,2 +1,1 @@
-• New: send MTC over the network (Apple network MIDI / RTP-MIDI) to other Macs or to Windows PCs running rtpMIDI. Turn on "Network", then connect out to an address or let other machines connect in. Connections you add are reconnected automatically.
-• The decoder recovers faster when noise comes before the LTC starts.
+• New "On a jump" setting. When the incoming timecode jumps (a cue change, or moving to another part of the source), LTC Bridge now stops MTC for half a second, then restarts it at the new position. Logic stops, locates and starts again cleanly, instead of taking several seconds to settle on the right speed. "Keep running, just relocate" restores the old behaviour.

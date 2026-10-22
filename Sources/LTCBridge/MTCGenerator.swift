@@ -17,6 +17,7 @@ final class MTCGenerator {
         case locking        // valid frames arriving, not yet trusted
         case running        // sending MTC, LTC present
         case freewheeling   // sending MTC, LTC dropped out
+        case relocating     // timecode jumped: MTC paused so the receiver stops, then restarts
     }
 
     /// Rate written into the MTC. Set by the caller (auto-detected or forced).
@@ -28,6 +29,13 @@ final class MTCGenerator {
     var offset: Double = 0
     /// Consecutive, contiguous LTC frames needed before MTC starts.
     var framesToLock = 3
+    /// What to do when the incoming timecode jumps while running. 0 keeps
+    /// MTC running and just sends a locate (full-frame) message. Anything
+    /// above 0 stops MTC for that many seconds first, so the receiver stops,
+    /// then locates and starts again cleanly — the way a tape machine or show
+    /// controller would. DAWs that estimate speed from MTC (Logic) can take
+    /// seconds to settle after a jump in a running stream.
+    var relocatePause: Double = 0
 
     private(set) var status: Status = .idle
     private(set) var jumps = 0
@@ -41,6 +49,7 @@ final class MTCGenerator {
     private var contiguous = 0
 
     private var needsFullFrame = true
+    private var pausedUntil: Double = -.infinity
     private var nextFrame = 0               // frame of the next quarter-frame slot
     private var nextQuarter = 0             // 0…3 within that frame
     private var secondHalf = false          // sending pieces 4–7 of the sequence
@@ -64,7 +73,7 @@ final class MTCGenerator {
         lastLTCTime = endTime
 
         let pos = Double(frameNumber + 1)
-        if status == .running || status == .freewheeling {
+        if status == .running || status == .freewheeling || status == .relocating {
             // Compare in a way that survives midnight: differences mod 24h.
             var drift = (anchorPos + (endTime - anchorTime) / frameDuration) - pos
             drift = drift.truncatingRemainder(dividingBy: Double(day))
@@ -73,6 +82,7 @@ final class MTCGenerator {
             if abs(drift) > 1.5 {
                 needsFullFrame = true
                 jumps += 1
+                if relocatePause > 0 { pausedUntil = endTime + relocatePause }
             }
             anchorPos = pos
             anchorTime = endTime
@@ -109,7 +119,7 @@ final class MTCGenerator {
         case .locking:
             if now - lastLTCTime > 0.5 { status = .idle; contiguous = 0; lastLTCFrame = nil }
             return ([], now + 0.005)
-        case .running, .freewheeling:
+        case .running, .freewheeling, .relocating:
             break
         }
 
@@ -119,6 +129,10 @@ final class MTCGenerator {
             contiguous = 0
             lastLTCFrame = nil
             return ([], now + 0.005)
+        }
+        if now < pausedUntil {
+            status = .relocating
+            return ([], min(pausedUntil, now + 0.005))
         }
         status = silence > frameDuration * 1.5 ? .freewheeling : .running
 

@@ -11,7 +11,7 @@ import Foundation
 /// generator is shared, so every touch of it holds `genLock`.
 final class Bridge: ObservableObject {
     enum Status: Equatable {
-        case noPermission, noDevice, inputFailed, noSignal, noLTC, locking, running, freewheeling
+        case noPermission, noDevice, inputFailed, noSignal, noLTC, locking, running, freewheeling, relocating
 
         var text: String {
             switch self {
@@ -23,11 +23,12 @@ final class Bridge: ObservableObject {
             case .locking: return "Locking…"
             case .running: return "Sending MTC"
             case .freewheeling: return "LTC dropped out — freewheeling"
+            case .relocating: return "Timecode jumped — stopping, then restarting MTC"
             }
         }
 
         var hasErrorCode: Bool { self == .noPermission || self == .noDevice || self == .inputFailed }
-        var sendingMTC: Bool { self == .running || self == .freewheeling }
+        var sendingMTC: Bool { self == .running || self == .freewheeling || self == .relocating }
     }
 
     // MARK: Settings (saved)
@@ -58,6 +59,11 @@ final class Bridge: ObservableObject {
     }
     /// Addresses to connect to and keep connected ("host:port").
     @Published private(set) var networkHosts: [String]
+
+    /// Seconds MTC pauses on a timecode jump (0 = keep running and just locate).
+    @Published var relocatePause: Double {
+        didSet { save(); applyGeneratorSettings() }
+    }
 
     /// Feed the decoder a generated LTC signal instead of the input. Not
     /// saved: the app must never open at a gig still in test mode.
@@ -122,6 +128,7 @@ final class Bridge: ObservableObject {
         offsetMs = defaults.object(forKey: "offsetMs") as? Double ?? 0
         extraDestination = MIDIUniqueID(defaults.integer(forKey: "extraDestination"))
         networkEnabled = defaults.bool(forKey: "networkEnabled")
+        relocatePause = defaults.object(forKey: "relocatePause") as? Double ?? 0.5
         networkHosts = defaults.stringArray(forKey: "networkHosts") ?? []
     }
 
@@ -133,6 +140,7 @@ final class Bridge: ObservableObject {
         defaults.set(offsetMs, forKey: "offsetMs")
         defaults.set(Int(extraDestination), forKey: "extraDestination")
         defaults.set(networkEnabled, forKey: "networkEnabled")
+        defaults.set(relocatePause, forKey: "relocatePause")
         defaults.set(networkHosts, forKey: "networkHosts")
     }
 
@@ -316,6 +324,7 @@ final class Bridge: ObservableObject {
         let fps = (forced ?? gen.rate).nominalSpeed
         gen.freewheel = Double(freewheelFrames) / fps
         gen.offset = offsetMs / 1000
+        gen.relocatePause = relocatePause
         genLock.unlock()
     }
 
@@ -438,7 +447,12 @@ final class Bridge: ObservableObject {
 
         let newStatus: Status
         if testSignal {
-            newStatus = genStatus == .running ? .running : genStatus == .locking ? .locking : .noSignal
+            switch genStatus {
+            case .running, .freewheeling: newStatus = .running
+            case .relocating: newStatus = .relocating
+            case .locking: newStatus = .locking
+            case .idle: newStatus = .noSignal
+            }
         } else if permission != .authorized && permission != .notDetermined {
             newStatus = .noPermission
         } else if status == .noDevice || status == .inputFailed, !inputActive {
@@ -447,6 +461,7 @@ final class Bridge: ObservableObject {
             switch genStatus {
             case .running: newStatus = .running
             case .freewheeling: newStatus = .freewheeling
+            case .relocating: newStatus = .relocating
             case .locking: newStatus = .locking
             case .idle: newStatus = (dec?.hasSignal ?? false) ? .noLTC : .noSignal
             }
