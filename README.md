@@ -24,8 +24,12 @@ of the incoming LTC, with quarter-frame jitter around 0.1 ms.
 - **Freewheel**: if LTC drops out briefly, MTC keeps running for the set
   number of frames, so Logic doesn't stop on a glitch. Past that, MTC stops
   and Logic stops.
-- **Relocates**: a jump in the incoming timecode (a cue change) sends an MTC
-  full-frame message so Logic locates at once.
+- **On a jump**: when the incoming timecode jumps (a cue change, or moving
+  to another part of the source), MTC stops for 0.5 s by default, then
+  restarts with a full-frame locate at the new position, so Logic stops,
+  locates and starts again cleanly. "Keep running, just relocate" sends the
+  locate without stopping; that is instant, but Logic can take several seconds
+  to settle on the right speed after it.
 - **Offset**: shift MTC earlier (+) or later (−) in milliseconds to make up
   for delay elsewhere in the chain.
 - **Network**: sends MTC over Apple network MIDI (RTP-MIDI) to other Macs
