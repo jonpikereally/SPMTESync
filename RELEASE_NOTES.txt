@@ -1,1 +1,1 @@
-• Updates now keep the previous version in ~/Library/Application Support/LTC Bridge/Previous Version.noindex instead of beside the app, so there's only ever one LTC Bridge in your Applications folder (and in Spotlight). An “LTC Bridge Previous.app” left by an earlier update is moved there automatically a few seconds after launch.
+• New app icon: a green timecode readout (01:00) above a line of LTC, like the LED display on show gear.
