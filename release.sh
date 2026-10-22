@@ -9,7 +9,7 @@ set -e
 cd "$(dirname "$0")"
 VERSION=$(cat VERSION)
 # Every error code used in the app and installer must be on the public error list.
-missing=$(grep -ohE 'LB-[0-9]{3}' Sources/LTCBridge/*.swift release.sh | sort -u | while read -r c; do
+missing=$(grep -ohE 'LB-[0-9]{3}' Sources/LTCBridge/*.swift Resources/InstallBundle.sh release.sh | sort -u | while read -r c; do
   grep -q "^| $c |" ERRORS.md || echo "$c"
 done)
 if [[ -n "$missing" ]]; then
@@ -42,14 +42,15 @@ swiftc -O -target x86_64-apple-macos13 -module-cache-path "$CACHE-x86" \
 DIST="$CACHE/dist"
 rm -rf "$DIST"
 APP="$DIST/LTC Bridge/LTC Bridge.app"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 lipo -create -output "$APP/Contents/MacOS/LTCBridge" "$CACHE/LTCBridge-arm64" "$CACHE/LTCBridge-x86_64"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+cp Resources/InstallBundle.sh "$APP/Contents/Resources/InstallBundle.sh"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
 codesign --force --sign - "$APP"
 
-cat > "$DIST/LTC Bridge/Install LTC Bridge.command" <<'INSTALL'
-#!/bin/bash
+printf '#!/bin/bash\nEXPECTED_VERSION=%q\n' "$VERSION" > "$DIST/LTC Bridge/Install LTC Bridge.command"
+cat >> "$DIST/LTC Bridge/Install LTC Bridge.command" <<'INSTALL'
 # LTC Bridge installer — copies the app to ~/Applications and launches it.
 cd "$(dirname "$0")"
 fail() {
@@ -62,15 +63,22 @@ fail() {
 }
 echo "Installing LTC Bridge…"
 mkdir -p ~/Applications || fail LB-601 "Couldn't create ~/Applications."
-rm -rf ~/Applications/"LTC Bridge.app"
-ditto --norsrc "LTC Bridge.app" ~/Applications/"LTC Bridge.app" \
-  || fail LB-601 "Couldn't copy LTC Bridge into ~/Applications."
-xattr -dr com.apple.quarantine ~/Applications/"LTC Bridge.app" 2>/dev/null
-codesign --force --sign - ~/Applications/"LTC Bridge.app" 2>/dev/null \
-  || fail LB-602 "Couldn't sign LTC Bridge for this Mac."
-tccutil reset Microphone com.jonpike.ltcbridge >/dev/null 2>&1
-open ~/Applications/"LTC Bridge.app" \
-  || fail LB-603 "LTC Bridge was installed but couldn't be opened. Open it from ~/Applications yourself."
+if /usr/bin/pgrep -x LTCBridge >/dev/null; then
+  fail LB-601 "Quit LTC Bridge before running the installer, then try again."
+fi
+STAGE_ROOT=$(mktemp -d ~/Applications/.LTCBridge-install-XXXXXX) \
+  || fail LB-601 "Couldn't create a staging folder in ~/Applications."
+trap 'rm -rf "$STAGE_ROOT"' EXIT
+HELPER="LTC Bridge.app/Contents/Resources/InstallBundle.sh"
+cp "$HELPER" "$STAGE_ROOT/InstallBundle.sh" \
+  || fail LB-601 "The download is missing its installation helper."
+HELPER="$STAGE_ROOT/InstallBundle.sh"
+STAGED="$STAGE_ROOT/LTC Bridge.app"
+/bin/bash "$HELPER" prepare "LTC Bridge.app" "$STAGED" com.jonpike.ltcbridge "$EXPECTED_VERSION" \
+  || fail LB-602 "Couldn't validate or prepare the new version. Your installed copy was kept."
+/bin/bash "$HELPER" swap 0 "$STAGED" ~/Applications/"LTC Bridge.app" \
+  com.jonpike.ltcbridge ~/Library/"Application Support/LTC Bridge/update-failed.txt" "$EXPECTED_VERSION" \
+  || fail LB-603 "Couldn't open the replacement. Any previous working copy was kept or restored."
 echo
 echo "Done! Allow LTC Bridge to use the microphone when macOS asks —"
 echo "that's how it hears the LTC on your audio input."

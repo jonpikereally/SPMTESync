@@ -172,6 +172,12 @@ final class LTCDecoder {
     }
 
     private func decodeFrame(endingAt t: Double) {
+        // The phase-correction bit makes the number of zero bits in an LTC
+        // frame even (and, with 80 bits, the number of ones too). A single
+        // corrupt data bit can still be valid BCD, so check this before it can
+        // become a timecode jump or influence rate detection.
+        guard (dataReg.nonzeroBitCount + syncReg.nonzeroBitCount).isMultiple(of: 2)
+        else { syncErrors += 1; return }
         let tc = Timecode(hours: field(48, 4) + 10 * field(56, 2),
                           minutes: field(32, 4) + 10 * field(40, 3),
                           seconds: field(16, 4) + 10 * field(24, 3),
@@ -179,41 +185,70 @@ final class LTCDecoder {
         guard field(0, 4) < 10, field(16, 4) < 10, field(32, 4) < 10, field(48, 4) < 10,
               tc.frames < 30, tc.seconds < 60, tc.minutes < 60, tc.hours < 24
         else { syncErrors += 1; return }
+        let dropFrame = field(10, 1) == 1
+        // Drop-frame labels ;00 and ;01 do not exist at the start of minutes
+        // other than each tenth minute.
+        guard !dropFrame || tc.seconds != 0 || tc.minutes.isMultiple(of: 10) || tc.frames >= 2
+        else { syncErrors += 1; return }
         framesDecoded += 1
-        onFrame(LTCFrame(timecode: tc, dropFrameFlag: field(10, 1) == 1, endSample: t))
+        onFrame(LTCFrame(timecode: tc, dropFrameFlag: dropFrame, endSample: t))
     }
 }
 
-/// Works out the frame rate from the LTC itself: the drop-frame flag, the
-/// highest frame number seen, and how fast frames actually arrive.
+/// Works out the frame rate from recent LTC cadence and the drop-frame flag.
+/// A few consecutive intervals confirm a new rate; an old high frame number
+/// must never override a new source's clock or poison detection after noise.
 struct RateDetector {
-    private var maxFrame = 0
     private var lastEnd: Double?
-    private var samplesPerFrame: Double?
+    private var candidate: FrameRate?
+    private var candidateCount = 0
     private(set) var rate: FrameRate?
 
     mutating func reset() { self = RateDetector() }
 
-    mutating func observe(_ f: LTCFrame, sampleRate: Double) {
-        maxFrame = max(maxFrame, f.timecode.frames)
-        if let last = lastEnd {
-            let d = f.endSample - last
-            // Only clean one-frame gaps (1/31 s … 1/23 s) count.
-            if d > sampleRate / 31 && d < sampleRate / 23 {
-                samplesPerFrame = samplesPerFrame.map { $0 + (d - $0) * 0.2 } ?? d
-            }
-        }
+    /// Returns whether this frame can be forwarded using the confirmed rate.
+    /// Missing frames and silence break candidate confirmation; a valid label
+    /// at the confirmed rate can still re-anchor MTC as soon as LTC returns.
+    @discardableResult
+    mutating func observe(_ f: LTCFrame, sampleRate: Double) -> Bool {
+        let last = lastEnd
         lastEnd = f.endSample
-        guard let spf = samplesPerFrame else { return }
-        let speed = sampleRate / spf
-        if f.dropFrameFlag {
-            rate = .fps2997DF
-        } else if maxFrame >= 25 || speed > 27.5 {
-            rate = .fps30
-        } else if maxFrame == 24 || speed > 24.5 {
-            rate = .fps25
-        } else {
-            rate = .fps24
+        guard let last else { return false }
+        let d = f.endSample - last
+        // Only clean one-frame gaps (1/31 s … 1/23 s) count. In particular,
+        // don't mistake a skipped frame or an old source's timing for cadence.
+        guard d > sampleRate / 31 && d < sampleRate / 23 else {
+            candidate = nil
+            candidateCount = 0
+            return rate.map { f.timecode.frames < $0.framesPerSecond && f.dropFrameFlag == $0.isDropFrame } ?? false
         }
+        let speed = sampleRate / d
+        let observed: FrameRate
+        if speed > 27.5 {
+            observed = f.dropFrameFlag ? .fps2997DF : .fps30
+        } else if speed > 24.5 {
+            observed = .fps25
+        } else {
+            observed = .fps24
+        }
+        // A high but valid-BCD frame number is not evidence of a faster rate.
+        // Reject labels that cannot exist at the cadence just measured.
+        guard f.timecode.frames < observed.framesPerSecond,
+              f.dropFrameFlag == observed.isDropFrame else {
+            candidate = nil
+            candidateCount = 0
+            return false
+        }
+
+        if observed != candidate {
+            candidate = observed
+            candidateCount = 1
+        } else {
+            candidateCount = min(3, candidateCount + 1)
+        }
+        if observed == rate { return true }
+        guard candidateCount >= 3 else { return false }
+        rate = observed
+        return true
     }
 }
