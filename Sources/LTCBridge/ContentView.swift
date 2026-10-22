@@ -272,16 +272,24 @@ struct ContentView: View {
     }
 
     private var stats: some View {
-        HStack(spacing: 18) {
-            stat("Frames decoded", bridge.framesDecoded)
-            stat("Sync errors", bridge.syncErrors)
-            stat("Relocates", bridge.relocates)
-            stat("MTC messages", bridge.mtcMessages)
-            Spacer()
-            if bridge.sampleRate > 0 {
-                Text("\(Int(bridge.sampleRate)) Hz")
-                    .font(.caption.monospacedDigit())
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 18) {
+                stat("Frames decoded", bridge.framesDecoded)
+                stat("Sync errors", bridge.syncErrors)
+                stat("Relocates", bridge.relocates)
+                stat("MTC messages", bridge.mtcMessages)
+                Spacer()
+                if bridge.sampleRate > 0 {
+                    Text("\(Int(bridge.sampleRate)) Hz")
+                        .font(.caption.monospacedDigit())
+                        .foregroundColor(.secondary)
+                }
+            }
+            if !bridge.polarityBitUsed {
+                Text("This source doesn't set LTC's polarity bit, so frames are accepted without that check. Some generators don't set it; timecode still works.")
+                    .font(.caption)
                     .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

@@ -44,6 +44,9 @@ of the incoming LTC, with quarter-frame jitter around 0.1 ms.
   Logic chases without the real source. Always off when the app opens.
 - Reconnects by itself when the input device disappears and comes back, and
   restarts the input if the sample rate changes or audio stalls.
+- Rejects LTC frames whose polarity bit doesn't balance, as corrupt, unless
+  the source turns out not to set that bit (some generators don't). Then it
+  accepts them and the window says so.
 - Retries MIDI setup if the MIDI service is unavailable. A failed extra
   destination leaves the other enabled outputs running.
 - Updates are validated and staged before replacing the app. Failed replacements

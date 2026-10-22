@@ -47,6 +47,15 @@ final class LTCDecoder {
     private var dataReg: UInt64 = 0         // the 64 bits before them, oldest in bit 0
     private var bitsSinceSync = 0
 
+    /// Polarity-bit results for the last 16 otherwise-valid frames, newest in
+    /// bit 0 (1 = balanced). Kept across silence: it describes the generator.
+    private var polarityHistory: UInt16 = 0
+    private var polarityFrames = 0
+    /// Whether frames with an unbalanced polarity bit are rejected. On from
+    /// the start, so corruption is caught from the first frame; see
+    /// `notePolarity` for when it switches off and back on.
+    private(set) var checkingPolarity = true
+
     /// Below this envelope (≈ -50 dBFS) the input counts as silent.
     static let silenceThreshold: Float = 0.003
 
@@ -172,12 +181,6 @@ final class LTCDecoder {
     }
 
     private func decodeFrame(endingAt t: Double) {
-        // The phase-correction bit makes the number of zero bits in an LTC
-        // frame even (and, with 80 bits, the number of ones too). A single
-        // corrupt data bit can still be valid BCD, so check this before it can
-        // become a timecode jump or influence rate detection.
-        guard (dataReg.nonzeroBitCount + syncReg.nonzeroBitCount).isMultiple(of: 2)
-        else { syncErrors += 1; return }
         let tc = Timecode(hours: field(48, 4) + 10 * field(56, 2),
                           minutes: field(32, 4) + 10 * field(40, 3),
                           seconds: field(16, 4) + 10 * field(24, 3),
@@ -190,8 +193,34 @@ final class LTCDecoder {
         // other than each tenth minute.
         guard !dropFrame || tc.seconds != 0 || tc.minutes.isMultiple(of: 10) || tc.frames >= 2
         else { syncErrors += 1; return }
+        // The phase-correction bit makes the number of zero bits in an LTC
+        // frame even (and, with 80 bits, the number of ones too). A single
+        // corrupt data bit can still be valid BCD, so check this before it can
+        // become a timecode jump or influence rate detection.
+        let balanced = (dataReg.nonzeroBitCount + syncReg.nonzeroBitCount).isMultiple(of: 2)
+        notePolarity(balanced)
+        guard balanced || !checkingPolarity else { syncErrors += 1; return }
         framesDecoded += 1
         onFrame(LTCFrame(timecode: tc, dropFrameFlag: dropFrame, endSample: t))
+    }
+
+    /// The spec says to set the polarity bit, but it exists to keep the
+    /// waveform's phase consistent, not to detect errors, and nothing forces a
+    /// generator to set it. One that never does leaves roughly every other
+    /// frame unbalanced; rejecting those would drop half the frames and never
+    /// lock. So the check switches off once 3 of the source's last 8 frames
+    /// are unbalanced (corruption alone almost never does that), and back on
+    /// after 16 balanced frames in a row, which such a generator can't produce.
+    private func notePolarity(_ balanced: Bool) {
+        polarityHistory = (polarityHistory << 1) | (balanced ? 1 : 0)
+        polarityFrames = min(polarityFrames + 1, 16)
+        if checkingPolarity {
+            let recent = min(polarityFrames, 8)
+            let unbalanced = recent - (polarityHistory & ((1 << recent) - 1)).nonzeroBitCount
+            if unbalanced >= 3 { checkingPolarity = false }
+        } else if polarityFrames == 16 && polarityHistory == 0xFFFF {
+            checkingPolarity = true
+        }
     }
 }
 

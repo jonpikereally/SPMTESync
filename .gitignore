@@ -1,3 +1,5 @@
 LTC Bridge.app/
 Sources/LTCBridge/Version.swift
 .DS_Store
+LTC Bridge Previous*.app/
+.LTCBridge-install-*/

@@ -25,6 +25,8 @@ struct LTCSignal {
     var gapsBefore: [Int: Double] = [:]
     /// Corrupt individual transmitted bits after the phase bit is set.
     var bitFlips: [Int: [Int]] = [:]
+    /// Some generators never set the polarity bit.
+    var setsPolarityBit = true
 
     func frameBits(_ tc: Timecode, df: Bool) -> [Int] {
         var b = [Int](repeating: 0, count: 80)
@@ -40,7 +42,7 @@ struct LTCSignal {
         for i in 0..<16 { b[64 + i] = sync[i] }
         // Polarity correction bit: even number of zeros per frame.
         let pcBit = rate.framesPerSecond == 25 ? 59 : 27
-        if b.filter({ $0 == 0 }).count % 2 == 1 { b[pcBit] = b[pcBit] == 0 ? 1 : 0 }
+        if setsPolarityBit && b.filter({ $0 == 0 }).count % 2 == 1 { b[pcBit] = b[pcBit] == 0 ? 1 : 0 }
         return b
     }
 
@@ -147,6 +149,7 @@ struct Result {
     var detectedRate: FrameRate?
     var rateChanges: [(time: Double, rate: FrameRate)] = []
     var maxStatusTransitions: [MTCGenerator.Status] = []
+    var checkingPolarity = true
 }
 
 /// Runs the signal through decoder + generator on a simulated clock: audio
@@ -197,6 +200,7 @@ func simulateAudio(_ samples: [Float], sampleRate: Double, buffer: Int = 512,
         now += tick
     }
     res.detectedRate = detector.rate
+    res.checkingPolarity = decoder.checkingPolarity
     return res
 }
 
@@ -465,6 +469,51 @@ do {
     check(!detector.observe(LTCFrame(timecode: Timecode(frames: 28), dropFrameFlag: false, endSample: end),
                             sampleRate: 48_000), "impossible 24 fps label was usable")
     check(detector.rate == .fps24, "invalid label changed confirmed rate")
+}
+
+print("generator that never sets the polarity bit still locks")
+for rate in [FrameRate.fps30, .fps25, .fps2997DF] {
+    var sig = LTCSignal(rate: rate, speed: rate.nominalSpeed, sampleRate: 48_000,
+                        segments: [(tc(1, 0, 0, 0, rate), rate.framesPerSecond * 10)])
+    sig.setsPolarityBit = false
+    let res = simulate(sig, relocatePause: 0.5)
+    let name = "no polarity bit, \(rate.label) fps"
+    let firstMTC = (res.receiver.fullFrames.first?.time ?? .infinity) - 0.05
+    check(!res.checkingPolarity, "\(name): the polarity check stayed on")
+    check(res.detectedRate == rate, "\(name): detected \(res.detectedRate?.label ?? "nothing")")
+    check(firstMTC < 1.0, "\(name): took \(firstMTC) s to start MTC")
+    check(res.receiver.fullFrames.count == 1, "\(name): \(res.receiver.fullFrames.count) locates, expected 1")
+    check(res.decodedFrames.count >= sig.segments[0].count - 12,
+          "\(name): only \(res.decodedFrames.count) of \(sig.segments[0].count) frames got through")
+    checkMTC(sig, res, segment: 0, name: name, from: 0.05 + 1.0)
+    print("  MTC started \(String(format: "%.2f", firstMTC)) s after the LTC")
+}
+
+print("polarity check comes back on when a source that sets the bit takes over")
+do {
+    var first = LTCSignal(rate: .fps30, speed: 30, sampleRate: 48_000,
+                          segments: [(tc(1, 0, 0, 0, .fps30), 90)])
+    first.setsPolarityBit = false
+    var second = LTCSignal(rate: .fps30, speed: 30, sampleRate: 48_000,
+                           segments: [(tc(2, 0, 0, 0, .fps30), 150)])
+    // 02:00:02:00 → 03:00:02:00 is still valid BCD and never occurs in this
+    // stream; one flipped bit unbalances the frame, so with the check back on
+    // it must be rejected, not relocate MTC.
+    second.bitFlips[tc(2, 0, 2, 0, .fps30)] = [48]
+    var audio = first.render().samples
+    let secondStart = Double(audio.count) / 48_000
+    audio.append(contentsOf: second.render().samples)
+    let res = simulateAudio(audio, sampleRate: 48_000, relocatePause: 0.5)
+    check(res.checkingPolarity, "the polarity check did not come back on")
+    check(!res.decodedFrames.contains { $0.timecode.hours == 3 },
+          "a corrupt frame got through after the check came back on")
+    check(res.receiver.fullFrames.count == 2,
+          "expected one locate per source, got \(res.receiver.fullFrames.count)")
+    let rx = res.receiver.decoded.filter { $0.time > secondStart + 1.0 }
+    check(!rx.isEmpty, "no MTC from the second source")
+    let worst = rx.map { abs(truePosition(second, segment: 0, at: $0.time - secondStart) - Double($0.fn) - 1.75) }.max() ?? .infinity
+    check(worst < 0.1, "second source MTC off by \(worst) frames")
+    print("  \(rx.count) MTC sequences from the second source, worst error \(String(format: "%.3f", worst)) frames")
 }
 
 print(failures == 0 ? "\nAll tests passed." : "\n\(failures) check(s) failed.")
