@@ -46,6 +46,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 lipo -create -output "$APP/Contents/MacOS/LTCBridge" "$CACHE/LTCBridge-arm64" "$CACHE/LTCBridge-x86_64"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/InstallBundle.sh "$APP/Contents/Resources/InstallBundle.sh"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
 codesign --force --sign - "$APP"
 

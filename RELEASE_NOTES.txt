@@ -1,2 +1,1 @@
-• Fixed: LTC from a generator that doesn't set the polarity bit produced no MTC at all in v1.3. Frames that fail that check are now only rejected when the source does set the bit, so every generator locks, and corrupt frames are still caught from sources that use it. The window notes when a source doesn't set it.
-• Fixed: a stalled MIDI driver could freeze the LTC Bridge window (and Quit) while a send was stuck. Status checks and output changes no longer wait for MIDI delivery.
+• New app icon: an LTC square wave crossing a bridge, in the app's timecode green.

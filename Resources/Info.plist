@@ -6,6 +6,8 @@
 	<string>LTC Bridge</string>
 	<key>CFBundleExecutable</key>
 	<string>LTCBridge</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.jonpike.ltcbridge</string>
 	<key>CFBundleName</key>
