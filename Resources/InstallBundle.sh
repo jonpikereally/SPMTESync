@@ -85,12 +85,16 @@ swap)
         [[ "$PID" == 0 ]] || /usr/bin/open "$DEST" >/dev/null 2>&1
         exit 1
     fi
-    BACKUP="${DEST%.app} Previous.$$.app"
-    PREVIOUS="${DEST%.app} Previous.app"
+    # The previous version is kept for recovery, but never in the Applications
+    # folder: it goes beside the failure marker (Application Support), in a
+    # .noindex folder so Spotlight and Launchpad don't offer it as a second
+    # copy of the app. Moving it there is a rename on the same volume.
+    BACKUP_DIR="$(dirname "$MARKER")/Previous Version.noindex"
+    BACKUP="$BACKUP_DIR/$(basename "$DEST" .app).$$.app"
+    PREVIOUS="$BACKUP_DIR/$(basename "$DEST")"
     HAD_OLD=0
-    [[ ! -e "$BACKUP" ]] || fail LB-112 "A recovery copy already exists at $BACKUP."
     if [[ -e "$DEST" ]]; then
-        if ! /bin/mv "$DEST" "$BACKUP"; then
+        if ! mkdir -p "$BACKUP_DIR" || [[ -e "$BACKUP" ]] || ! /bin/mv "$DEST" "$BACKUP"; then
             mark_failure "Couldn't move the installed app aside; its installed copy was kept."
             [[ "$PID" == 0 ]] || /usr/bin/open "$DEST" >/dev/null 2>&1
             exit 1
@@ -119,7 +123,8 @@ swap)
     /usr/bin/open "$DEST" \
         || rollback "The replacement couldn't be opened."
     # LaunchServices accepting open does not guarantee the app stays up. Keep
-    # the working predecessor so a subsequent startup failure remains recoverable.
+    # the working predecessor (one, replacing any older one) so a subsequent
+    # startup failure remains recoverable.
     if [[ "$HAD_OLD" == 1 ]]; then
         rm -rf "$PREVIOUS"
         /bin/mv "$BACKUP" "$PREVIOUS" || true

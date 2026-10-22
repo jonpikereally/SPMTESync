@@ -18,6 +18,7 @@ enum ErrorCode: String, CaseIterable {
     case updateDamagedApp = "LB-110"
     case updateInstallerFailed = "LB-111"
     case updateSwapFailed = "LB-112"
+    case legacyBackupTidyFailed = "LB-113"
     // 2xx — audio input
     case microphoneDenied = "LB-201"
     case inputDeviceMissing = "LB-202"
@@ -49,6 +50,7 @@ enum ErrorCode: String, CaseIterable {
         case .updateDamagedApp: return "The downloaded update is damaged."
         case .updateInstallerFailed: return "Couldn't start installing the update."
         case .updateSwapFailed: return "Installing the update failed, so the previous version was kept."
+        case .legacyBackupTidyFailed: return "Couldn't move an old backup copy of LTC Bridge out of the Applications folder."
         case .microphoneDenied: return "LTC Bridge isn't allowed to use audio inputs, so it can't hear the timecode."
         case .inputDeviceMissing: return "The selected audio input isn't connected."
         case .inputStartFailed: return "Couldn't start listening to the audio input."
@@ -76,6 +78,8 @@ enum ErrorCode: String, CaseIterable {
             return "The published update is broken. Download the latest version from GitHub instead."
         case .updateInstallerFailed, .updateSwapFailed:
             return "Make sure LTC Bridge is in ~/Applications and that the folder isn't locked, then try again."
+        case .legacyBackupTidyFailed:
+            return "Drag “LTC Bridge Previous.app” from your Applications folder to the Trash. It's only a backup of the previous version."
         case .microphoneDenied:
             return "Turn LTC Bridge on in System Settings → Privacy & Security → Microphone, then quit and reopen it. If it's already on, turn it off and on again."
         case .inputDeviceMissing:

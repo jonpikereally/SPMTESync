@@ -45,5 +45,11 @@ scratch clone, and diff against origin/main first in case Jon edited on GitHub.
   exists; sessions are created in Audio MIDI Setup → MIDI Network Setup. With
   none, its name is empty and `isEnabled` stays false (LB-307). Jon's Mac had
   none as of Oct 21 2026, so the network loopback test skips until one exists.
+- Update backups: InstallBundle.sh `swap` moves the replaced app to
+  `Previous Version.noindex` beside the failure marker (Application Support),
+  never beside the app. Jon wants one copy in ~/Applications. v1.5 and earlier
+  left `LTC Bridge Previous.app` beside the app; `Backups.tidyLegacyCopies`
+  moves that 5 s after launch (Trash for extras). An update runs the *old*
+  app's helper, so a layout change only applies from the update after it ships.
 - Every new error code goes in `Errors.swift` and `ERRORS.md`; release.sh
   refuses to build otherwise.

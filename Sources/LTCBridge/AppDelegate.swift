@@ -25,6 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ErrorReporter.shared.onChange = { [weak self] in self?.state.problem = ErrorReporter.shared.pending }
 
         reportFailedUpdateIfAny()
+        // Give an older install helper time to finish renaming its backup.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.tidyLegacyBackups() }
         Updater.shared.onChange = { [weak self] in self?.refreshUpdateItem() }
         Updater.shared.startAutomaticChecks()
 
@@ -188,6 +190,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ?? .updateSwapFailed
         ErrorReporter.shared.report(AppError(code, parts.count > 1 ? parts[1] : nil),
                                     surface: .alert, title: "Couldn't install the update")
+    }
+
+    /// Updates made by v1.5 and earlier left the previous version beside the
+    /// app, a second copy in the Applications folder. Move it to the backup
+    /// folder the install helper now uses (see Backups).
+    private func tidyLegacyBackups() {
+        let app = Bundle.main.bundleURL
+        let bundleID = Bundle.main.bundleIdentifier ?? "com.jonpike.ltcbridge"
+        let support = Updater.swapFailureMarker.deletingLastPathComponent()
+        let running = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleURL?.standardizedFileURL })
+        DispatchQueue.global(qos: .utility).async {
+            do {
+                _ = try Backups.tidyLegacyCopies(
+                    app: app, bundleID: bundleID, support: support,
+                    isRunning: { running.contains($0.standardizedFileURL) },
+                    discard: { try FileManager.default.trashItem(at: $0, resultingItemURL: nil) })
+            } catch {
+                ErrorReporter.shared.report(AppError(.legacyBackupTidyFailed, error.localizedDescription), surface: .banner)
+            }
+        }
     }
 
     private func showPendingProblem() {
