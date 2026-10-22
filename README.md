@@ -44,6 +44,11 @@ of the incoming LTC, with quarter-frame jitter around 0.1 ms.
   Logic chases without the real source. Always off when the app opens.
 - Reconnects by itself when the input device disappears and comes back, and
   restarts the input if the sample rate changes or audio stalls.
+- Retries MIDI setup if the MIDI service is unavailable. A failed extra
+  destination leaves the other enabled outputs running.
+- Updates are validated and staged before replacing the app. Failed replacements
+  restore the installed version; a successful update keeps a “LTC Bridge Previous”
+  copy beside the app for recovery if the new version fails after launch.
 - Keeps the Mac awake and out of App Nap while running, and asks before
   quitting while MTC is going out.
 

@@ -55,6 +55,9 @@ final class MTCGenerator {
     private var secondHalf = false          // sending pieces 4–7 of the sequence
     private var sequenceFrame = 0           // the frame the current 8-piece sequence describes
 
+    /// A newly recovered MIDI output needs a full position before quarter frames.
+    func requestLocate() { needsFullFrame = true }
+
     /// Feed every decoded LTC frame. `endTime` is when the frame ended, i.e.
     /// when the timecode reached `frameNumber + 1`.
     func ltcFrame(_ frameNumber: Int, endTime: Double) {

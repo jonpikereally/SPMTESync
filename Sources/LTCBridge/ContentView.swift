@@ -7,6 +7,7 @@ import SwiftUI
 final class AppState: ObservableObject {
     @Published var updateVersion: String?
     @Published var problem: AppError?
+    @Published var preparingUpdate = false
     var installUpdate: () -> Void = {}
     var showProblem: () -> Void = {}
 }
@@ -24,6 +25,7 @@ struct ContentView: View {
                     Text("LTC Bridge v\(v) is available.")
                     Spacer()
                     Button("Install…", action: app.installUpdate)
+                        .disabled(app.preparingUpdate)
                 }
             }
             if let p = app.problem {
@@ -82,7 +84,7 @@ struct ContentView: View {
         case .relocating: return .blue
         case .locking: return .yellow
         case .noLTC, .noSignal: return .secondary
-        case .noPermission, .noDevice, .inputFailed: return .red
+        case .noPermission, .noDevice, .inputFailed, .midiFailed: return .red
         }
     }
 

@@ -45,8 +45,8 @@ Codes are grouped by area: 1xx updates, 2xx audio input, 3xx MIDI output,
 | LB-202 | The selected audio input isn't connected. | Plug the interface back in or start Dante Virtual Soundcard. LTC Bridge reconnects by itself as soon as the device appears. |
 | LB-203 | Couldn't start listening to the audio input. | Check that the device works in Audio MIDI Setup and isn't in use exclusively by another app, then pick it again. |
 | LB-204 | The audio input stopped delivering audio, so LTC Bridge restarted it. | Usually a driver hiccup or a sample-rate change. If it keeps happening, check the interface's clock and connection. |
-| LB-301 | Couldn't create the “LTC Bridge” MIDI port, so no MTC can be sent. | Quit and reopen LTC Bridge. If it keeps happening, restart the Mac (the MIDI system may be stuck). |
-| LB-302 | The extra MIDI destination isn't connected, so MTC only goes to the “LTC Bridge” port. | Reconnect the device or network session, or choose “None” under “Also send to”. |
+| LB-301 | Couldn't create the “LTC Bridge” MIDI port, so no MTC can be sent. | LTC Bridge retries automatically. If it keeps happening, restart the Mac (the MIDI system may be stuck). |
+| LB-302 | The extra MIDI destination isn't connected. Other enabled outputs keep running. | Reconnect the device or network session, or choose “None” under “Also send to”. |
 | LB-303 | Sending MTC failed. | Check the destination under “Also send to”, or choose “None”. |
 | LB-304 | macOS refused real-time priority for the MTC sender, so MTC timing may wobble by a few milliseconds. | Quit and reopen LTC Bridge. Close heavy apps you don't need during the show. Logic usually still chases fine. |
 | LB-305 | Couldn't turn on network MIDI, so MTC isn't going out over the network. | Check that this Mac is on a network, then open Audio MIDI Setup → Window → Show MIDI Network Setup and look at the session there. Turn network output off and on again in LTC Bridge. |

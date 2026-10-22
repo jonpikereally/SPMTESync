@@ -23,6 +23,8 @@ struct LTCSignal {
     var segments: [(start: Int, count: Int)]
     /// Silent gaps inserted before segment i, in seconds.
     var gapsBefore: [Int: Double] = [:]
+    /// Corrupt individual transmitted bits after the phase bit is set.
+    var bitFlips: [Int: [Int]] = [:]
 
     func frameBits(_ tc: Timecode, df: Bool) -> [Int] {
         var b = [Int](repeating: 0, count: 80)
@@ -53,7 +55,8 @@ struct LTCSignal {
             if let g = gapsBefore[i] { t += g }
             for k in 0..<seg.count {
                 let fn = seg.start + k
-                let bits = frameBits(Timecode(frameNumber: fn, rate: rate), df: rate.isDropFrame)
+                var bits = frameBits(Timecode(frameNumber: fn, rate: rate), df: rate.isDropFrame)
+                for bit in bitFlips[fn] ?? [] { bits[bit] ^= 1 }
                 for (j, bit) in bits.enumerated() {
                     let bt = t + Double(j) * bitDur
                     edges.append(bt)
@@ -106,15 +109,15 @@ struct LTCSignal {
 struct MTCReceiver {
     var pieces = [Int](repeating: -1, count: 8)
     var expect = 0
-    var fullFrames: [(time: Double, tc: Timecode)] = []
+    var fullFrames: [(time: Double, tc: Timecode, rate: Int)] = []
     /// (time of piece 7, reassembled frame number, rate code)
     var decoded: [(time: Double, fn: Int, rate: Int)] = []
     var qfTimes: [Double] = []
 
-    mutating func receive(_ msg: [UInt8], at time: Double, rate: FrameRate) {
+    mutating func receive(_ msg: [UInt8], at time: Double) {
         if msg.first == 0xF0 {
             let tc = Timecode(hours: Int(msg[5] & 0x1F), minutes: Int(msg[6]), seconds: Int(msg[7]), frames: Int(msg[8]))
-            fullFrames.append((time, tc))
+            fullFrames.append((time, tc, Int(msg[5] >> 5)))
             expect = 0
             pieces = [Int](repeating: -1, count: 8)
             return
@@ -126,6 +129,7 @@ struct MTCReceiver {
         pieces[piece] = value
         expect = (piece + 1) % 8
         if piece == 7 {
+            guard let rate = FrameRate(rawValue: value >> 1) else { return }
             let tc = Timecode(hours: pieces[6] | (pieces[7] & 1) << 4,
                               minutes: pieces[4] | pieces[5] << 4,
                               seconds: pieces[2] | pieces[3] << 4,
@@ -141,6 +145,7 @@ struct Result {
     var decodedFrames: [LTCFrame] = []
     var receiver = MTCReceiver()
     var detectedRate: FrameRate?
+    var rateChanges: [(time: Double, rate: FrameRate)] = []
     var maxStatusTransitions: [MTCGenerator.Status] = []
 }
 
@@ -149,10 +154,15 @@ struct Result {
 /// `tick` seconds.
 func simulate(_ sig: LTCSignal, buffer: Int = 512, latency: Double = 0.003, tick: Double = 0.0005,
               freewheel: Double = 0.4, offset: Double = 0, relocatePause: Double = 0) -> Result {
-    let (samples, _) = sig.render()
-    let decoder = LTCDecoder(sampleRate: sig.sampleRate)
+    simulateAudio(sig.render().samples, sampleRate: sig.sampleRate, buffer: buffer, latency: latency,
+                  tick: tick, freewheel: freewheel, offset: offset, relocatePause: relocatePause)
+}
+
+func simulateAudio(_ samples: [Float], sampleRate: Double, buffer: Int = 512,
+                   latency: Double = 0.003, tick: Double = 0.0005,
+                   freewheel: Double = 0.4, offset: Double = 0, relocatePause: Double = 0) -> Result {
+    let decoder = LTCDecoder(sampleRate: sampleRate)
     let gen = MTCGenerator()
-    gen.rate = sig.rate
     gen.freewheel = freewheel
     gen.offset = offset
     gen.relocatePause = relocatePause
@@ -160,23 +170,27 @@ func simulate(_ sig: LTCSignal, buffer: Int = 512, latency: Double = 0.003, tick
     var detector = RateDetector()
     decoder.onFrame = { f in
         res.decodedFrames.append(f)
-        detector.observe(f, sampleRate: sig.sampleRate)
-        gen.ltcFrame(f.timecode.frameNumber(sig.rate), endTime: f.endSample / sig.sampleRate)
+        guard detector.observe(f, sampleRate: sampleRate), let rate = detector.rate else { return }
+        if res.rateChanges.last?.rate != rate {
+            res.rateChanges.append((f.endSample / sampleRate, rate))
+        }
+        gen.rate = rate
+        gen.ltcFrame(f.timecode.frameNumber(rate), endTime: f.endSample / sampleRate)
     }
     var pos = 0
     var now = 0.0
     var nextPoll = 0.0
-    let end = Double(samples.count) / sig.sampleRate + 1.0
+    let end = Double(samples.count) / sampleRate + 1.0
     while now < end {
         // Deliver any buffer that has been fully captured (+ latency) by now.
-        while pos < samples.count, Double(pos + buffer) / sig.sampleRate + latency <= now {
+        while pos < samples.count, Double(pos + buffer) / sampleRate + latency <= now {
             let n = min(buffer, samples.count - pos)
             samples.withUnsafeBufferPointer { decoder.process($0.baseAddress! + pos, count: n) }
             pos += n
         }
         if now >= nextPoll {
             let r = gen.poll(now: now)
-            for m in r.messages { res.receiver.receive(m, at: now, rate: sig.rate) }
+            for m in r.messages { res.receiver.receive(m, at: now) }
             if res.maxStatusTransitions.last != gen.status { res.maxStatusTransitions.append(gen.status) }
             nextPoll = min(r.nextTime, now + 0.005)
         }
@@ -378,6 +392,79 @@ do {
         check(abs(got - expect) <= 1.5, "pause: restarted at \(ff.tc.formatted()), expected about frame \(expect)")
     }
     checkMTC(sig, res, segment: 1, name: "pause, after", from: jumpAt + 0.8)
+}
+
+print("corrupt LTC data cannot poison automatic rate detection")
+for flips in [[3], [3, 59]] {
+    // 20 -> 28 is valid BCD, but cannot exist in a 25 fps stream. The first
+    // case fails phase parity; the second preserves parity and must instead
+    // be rejected by cadence-aware rate detection before reaching MTC.
+    var sig = LTCSignal(rate: .fps25, speed: 25, sampleRate: 48_000,
+                        segments: [(0, 250)])
+    sig.bitFlips[45] = flips
+    let res = simulate(sig, relocatePause: 0.5)
+    check(res.detectedRate == .fps25, "corruption \(flips): rate changed from 25")
+    check(res.rateChanges.map { $0.rate } == [.fps25], "corruption \(flips): spurious rate change")
+    check(res.receiver.fullFrames.count == 1, "corruption \(flips): caused a relocate")
+    checkMTC(sig, res, segment: 0, name: "corruption \(flips)")
+    checkQuarterSpacing(sig, res, name: "corruption \(flips)")
+    if flips.count == 1 {
+        check(!res.decodedFrames.contains { $0.timecode.seconds == 1 && $0.timecode.frames == 28 },
+              "single-bit corruption passed phase parity validation")
+    } else {
+        check(res.decodedFrames.contains { $0.timecode.seconds == 1 && $0.timecode.frames == 28 },
+              "parity-preserving corruption did not exercise the rate detector")
+    }
+}
+
+print("automatic rate follows 30 -> 25 -> 24 on the same input")
+do {
+    let signals = [FrameRate.fps30, .fps25, .fps24].map { r in
+        LTCSignal(rate: r, speed: r.nominalSpeed, sampleRate: 48_000,
+                  segments: [(tc(1, 0, 0, 0, r), r.framesPerSecond * 3)])
+    }
+    var audio: [Float] = []
+    var starts: [Double] = []
+    for sig in signals {
+        starts.append(Double(audio.count) / sig.sampleRate)
+        audio.append(contentsOf: sig.render().samples)
+    }
+    let res = simulateAudio(audio, sampleRate: 48_000, relocatePause: 0.5)
+    check(res.rateChanges.map { $0.rate } == [.fps30, .fps25, .fps24],
+          "same input: rate detection did not follow 30 -> 25 -> 24")
+    check(res.detectedRate == .fps24, "same input: final rate was not 24")
+    check(res.receiver.fullFrames.count == 3,
+          "same input: expected initial locate plus one per rate change, got \(res.receiver.fullFrames.count)")
+    for (i, sig) in signals.enumerated() {
+        let rx = res.receiver.decoded.filter { $0.time > starts[i] + 0.8 && $0.time < starts[i] + 3 }
+        check(!rx.isEmpty, "same input: no stable MTC at \(sig.rate.label) fps")
+        var worst = 0.0
+        for d in rx {
+            check(d.rate == sig.rate.rawValue, "same input: incorrect MTC rate after switching to \(sig.rate.label)")
+            let expected = truePosition(sig, segment: 0, at: d.time - starts[i])
+            worst = max(worst, abs(expected - Double(d.fn) - 1.75))
+        }
+        check(worst < 0.1, "same input: \(sig.rate.label) fps MTC off by \(worst) frames")
+    }
+}
+
+print("rate changes without silence and invalid labels")
+do {
+    var detector = RateDetector()
+    var end = 0.0
+    for r in [FrameRate.fps30, .fps25, .fps24] {
+        for n in 0..<90 {
+            end += 48_000 / r.nominalSpeed
+            let f = LTCFrame(timecode: Timecode(frameNumber: n, rate: r),
+                             dropFrameFlag: r.isDropFrame, endSample: end)
+            let usable = detector.observe(f, sampleRate: 48_000)
+            if n >= 3 { check(usable && detector.rate == r, "cadence did not confirm \(r.label) within four frames") }
+        }
+    }
+    end += 2_000
+    check(!detector.observe(LTCFrame(timecode: Timecode(frames: 28), dropFrameFlag: false, endSample: end),
+                            sampleRate: 48_000), "impossible 24 fps label was usable")
+    check(detector.rate == .fps24, "invalid label changed confirmed rate")
 }
 
 print(failures == 0 ? "\nAll tests passed." : "\n\(failures) check(s) failed.")
