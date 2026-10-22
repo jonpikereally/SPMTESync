@@ -1,4 +1,2 @@
-• More reliable automatic frame-rate detection: corrupt LTC frames no longer force the wrong rate, and source rate changes recover automatically.
-• Switching inputs or leaving Test mode now waits for the old test callback to finish, preventing overlapping timing data.
-• MIDI setup retries automatically if the MIDI service is unavailable. A failed optional output no longer interrupts other enabled outputs.
-• Safer updates: validate and stage the new app first, restore the working copy on failure, and keep a previous version for recovery.
+• Fixed: LTC from a generator that doesn't set the polarity bit produced no MTC at all in v1.3. Frames that fail that check are now only rejected when the source does set the bit, so every generator locks, and corrupt frames are still caught from sources that use it. The window notes when a source doesn't set it.
+• Fixed: a stalled MIDI driver could freeze the LTC Bridge window (and Quit) while a send was stuck. Status checks and output changes no longer wait for MIDI delivery.

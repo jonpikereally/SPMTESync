@@ -63,20 +63,26 @@ final class MIDIOut {
     private var client = MIDIClientRef()
     private var source = MIDIEndpointRef()
     private var port = MIDIPortRef()
-    private var destination: MIDIEndpointRef = 0
-    private var networkDestination: MIDIEndpointRef = 0
-    private let lock = NSLock()
-    private var packetBuffer = [UInt8](repeating: 0, count: 1024)
-    private var failureCount = 0
-    private var sendError: OSStatus = noErr
+    // Two locks so the main thread never waits on MIDI delivery. `sendLock`
+    // serializes send() and is held while CoreMIDI delivers, which stalls if
+    // a driver or the MIDI server hangs. `stateLock` guards the outputs and
+    // counters, is never held across a CoreMIDI call, and is the only one the
+    // window's status checks and settings changes take.
+    private let sendLock = NSLock()
+    private let stateLock = NSLock()
+    private var packetBuffer = [UInt8](repeating: 0, count: 1024)   // sendLock
+    private var destination: MIDIEndpointRef = 0                    // stateLock
+    private var networkDestination: MIDIEndpointRef = 0             // stateLock
+    private var failureCount = 0                                    // stateLock
+    private var sendError: OSStatus = noErr                         // stateLock
 
     var sendFailures: Int {
-        lock.lock(); defer { lock.unlock() }
+        stateLock.lock(); defer { stateLock.unlock() }
         return failureCount
     }
 
     var lastSendError: OSStatus {
-        lock.lock(); defer { lock.unlock() }
+        stateLock.lock(); defer { stateLock.unlock() }
         return sendError
     }
 
@@ -124,23 +130,25 @@ final class MIDIOut {
     /// it isn't connected right now.
     @discardableResult
     func setDestination(_ uid: MIDIUniqueID) -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        destination = 0
-        guard uid != 0 else { return true }
-        guard let endpoint = backend.findDestination(uid) else { return false }
-        destination = endpoint
-        return true
+        // The lookup is a CoreMIDI call, so it happens outside the lock.
+        let endpoint = uid == 0 ? nil : backend.findDestination(uid)
+        stateLock.lock(); defer { stateLock.unlock() }
+        destination = endpoint ?? 0
+        return uid == 0 || endpoint != nil
     }
 
     /// The network session's destination (0 = don't send over the network).
     func setNetworkDestination(_ endpoint: MIDIEndpointRef) {
-        lock.lock(); defer { lock.unlock() }
+        stateLock.lock(); defer { stateLock.unlock() }
         networkDestination = endpoint
     }
 
     func send(_ messages: [[UInt8]]) {
-        lock.lock(); defer { lock.unlock() }
-        packetBuffer.withUnsafeMutableBytes { raw in
+        sendLock.lock(); defer { sendLock.unlock() }
+        stateLock.lock()
+        let destination = self.destination, networkDestination = self.networkDestination
+        stateLock.unlock()
+        let firstError: OSStatus = packetBuffer.withUnsafeMutableBytes { raw in
             let list = raw.baseAddress!.assumingMemoryBound(to: MIDIPacketList.self)
             var packet: UnsafeMutablePointer<MIDIPacket>? = MIDIPacketListInit(list)
             for m in messages {
@@ -157,7 +165,12 @@ final class MIDIOut {
                 let status = backend.send(port, networkDestination, UnsafePointer(list))
                 if firstError == noErr { firstError = status }
             }
-            if firstError != noErr { failureCount += 1; sendError = firstError }
+            return firstError
+        }
+        if firstError != noErr {
+            stateLock.lock(); defer { stateLock.unlock() }
+            failureCount += 1
+            sendError = firstError
         }
     }
 }

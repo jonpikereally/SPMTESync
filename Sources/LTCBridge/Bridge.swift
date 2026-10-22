@@ -82,6 +82,9 @@ final class Bridge: ObservableObject {
     @Published private(set) var rate: FrameRate?
     @Published private(set) var framesDecoded = 0
     @Published private(set) var syncErrors = 0
+    /// False once the decoder has seen that this source doesn't set LTC's
+    /// polarity bit, so frames are accepted without that check.
+    @Published private(set) var polarityBitUsed = true
     @Published private(set) var relocates = 0
     @Published private(set) var mtcMessages = 0
     @Published private(set) var sampleRate: Double = 0
@@ -487,6 +490,8 @@ final class Bridge: ObservableObject {
         level = inputActive ? (dec?.level ?? 0) : 0
         framesDecoded = dec?.framesDecoded ?? 0
         syncErrors = dec?.syncErrors ?? 0
+        let polarity = dec?.checkingPolarity ?? true
+        if polarityBitUsed != polarity { polarityBitUsed = polarity }
         relocates = max(0, jumps)
         mtcMessages = sent
         rate = detected

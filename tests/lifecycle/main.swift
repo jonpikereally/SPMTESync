@@ -96,6 +96,41 @@ do {
     check(false, "fake MIDI setup failed: \(error)")
 }
 
+print("a stuck MIDI send never blocks status checks or output changes")
+do {
+    let entered = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    let backend = MIDIOut.Backend(
+        makeClient: { (noErr, 10) }, makeSource: { _ in (noErr, 20) }, makePort: { _ in (noErr, 30) },
+        findDestination: { MIDIEndpointRef($0) },
+        receive: { _, _ in entered.signal(); release.wait(); return noErr },   // a hung driver
+        send: { _, _, _ in noErr },
+        disposeClient: { _ in }, disposeSource: { _ in }, disposePort: { _ in })
+    let output = try MIDIOut(backend: backend)
+    let sent = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async { output.send([[0xF1, 0x00]]); sent.signal() }
+    check(entered.wait(timeout: .now() + 2) == .success, "stuck send did not start")
+    // What the window does every second. On a worker thread with a deadline,
+    // so a regression fails here instead of hanging the test run.
+    let windowDone = DispatchSemaphore(value: 0)
+    var destinationSet = false
+    DispatchQueue.global().async {
+        _ = output.sendFailures
+        _ = output.lastSendError
+        destinationSet = output.setDestination(40)
+        output.setNetworkDestination(50)
+        windowDone.signal()
+    }
+    let unblocked = windowDone.wait(timeout: .now() + 0.5) == .success
+    check(unblocked, "status checks and output changes waited on a stuck MIDI send")
+    release.signal()
+    if !unblocked { _ = windowDone.wait(timeout: .now() + 2) }
+    check(destinationSet, "choosing an extra destination failed during a stuck send")
+    check(sent.wait(timeout: .now() + 2) == .success, "send did not finish after the driver recovered")
+} catch {
+    check(false, "fake MIDI setup failed: \(error)")
+}
+
 print("MIDI initialization failure and shutdown release all owned resources")
 for (step, expected) in [("client", []), ("source", ["client"]), ("port", ["source", "client"])] {
     let fake = FakeMIDI()
