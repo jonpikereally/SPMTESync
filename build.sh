@@ -20,6 +20,7 @@ APP="LTC Bridge.app"
 mkdir -p "$CACHE" "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/InstallBundle.sh "$APP/Contents/Resources/InstallBundle.sh"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
 swiftc -O -target "$(uname -m)-apple-macos13" -module-cache-path "$CACHE" \
   -o "$APP/Contents/MacOS/LTCBridge" $(ls Sources/LTCBridge/*.swift)

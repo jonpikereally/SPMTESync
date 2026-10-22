@@ -23,6 +23,9 @@ scratch clone, and diff against origin/main first in case Jon edited on GitHub.
   `NetworkMIDI` (the default MIDINetworkSession: RTP-MIDI to other Macs /
   rtpMIDI on Windows).
 - `Bridge.swift` — wiring, settings, watchdog, real-time sender thread.
+- `Resources/AppIcon.icns` — committed; regenerate with `tools/make-icon.swift`
+  (renders the PNGs) + `tools/make-icns.py` (packs them; `iconutil` doesn't
+  run in Claude's sandbox, though it does read the result in a normal shell).
 - `Updater.swift` / `Errors.swift` — copied from PasteStack (LB- codes;
   swap script resets the Microphone TCC grant).
 
