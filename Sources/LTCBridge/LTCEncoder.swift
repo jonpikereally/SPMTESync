@@ -61,22 +61,47 @@ final class LTCEncoder {
 /// Plays an LTCEncoder in real time into the same handler the audio input
 /// uses, in 512-sample blocks like an interface would.
 final class TestSignalSource {
-    private final class RunFlag { var running = true }
-    private var flag: RunFlag?
+    private final class Run {
+        private let condition = NSCondition()
+        private var running = true
+        private var finished = false
+
+        var shouldContinue: Bool {
+            condition.lock(); defer { condition.unlock() }
+            return running
+        }
+
+        func finish() {
+            condition.lock(); defer { condition.unlock() }
+            finished = true
+            condition.broadcast()
+        }
+
+        func stopAndWait() {
+            condition.lock(); defer { condition.unlock() }
+            running = false
+            while !finished { condition.wait() }
+        }
+    }
+
+    private let lifecycleLock = NSLock()
+    private var run: Run?
 
     func start(rate: FrameRate, sampleRate: Double, handler: @escaping AudioInput.Handler) {
-        stop()
-        let flag = RunFlag()
-        self.flag = flag
+        lifecycleLock.lock(); defer { lifecycleLock.unlock() }
+        run?.stopAndWait()
+        let run = Run()
+        self.run = run
         let encoder = LTCEncoder(rate: rate, sampleRate: sampleRate, start: Timecode(hours: 1))
         let thread = Thread {
+            defer { run.finish() }
             let block = 512
             var buf = [Float](repeating: 0, count: block)
             let start = HostClock.now()
             var produced = 0.0
-            while flag.running {
+            while run.shouldContinue {
                 let due = (HostClock.now() - start) * sampleRate
-                while flag.running && produced + Double(block) <= due {
+                while run.shouldContinue && produced + Double(block) <= due {
                     buf.withUnsafeMutableBufferPointer { p in
                         encoder.render(into: p.baseAddress!, count: block)
                         handler(p.baseAddress!, block, start + produced / sampleRate)
@@ -91,8 +116,13 @@ final class TestSignalSource {
         thread.start()
     }
 
+    /// Called outside the handler. Waits for any in-flight callback before the
+    /// bridge resets the decoder and sample-position bookkeeping.
     func stop() {
-        flag?.running = false
-        flag = nil
+        lifecycleLock.lock(); defer { lifecycleLock.unlock() }
+        run?.stopAndWait()
+        run = nil
     }
+
+    deinit { stop() }
 }

@@ -54,7 +54,7 @@ enum ErrorCode: String, CaseIterable {
         case .inputStartFailed: return "Couldn't start listening to the audio input."
         case .inputStalled: return "The audio input stopped delivering audio, so LTC Bridge restarted it."
         case .midiSetupFailed: return "Couldn't create the “LTC Bridge” MIDI port, so no MTC can be sent."
-        case .midiDestinationMissing: return "The extra MIDI destination isn't connected, so MTC only goes to the “LTC Bridge” port."
+        case .midiDestinationMissing: return "The extra MIDI destination isn't connected. Other enabled outputs keep running."
         case .midiSendFailed: return "Sending MTC failed."
         case .networkSessionFailed: return "Couldn't turn on network MIDI, so MTC isn't going out over the network."
         case .networkHostInvalid: return "Couldn't connect to that network address."
@@ -85,7 +85,7 @@ enum ErrorCode: String, CaseIterable {
         case .inputStalled:
             return "Usually a driver hiccup or a sample-rate change. If it keeps happening, check the interface's clock and connection."
         case .midiSetupFailed:
-            return "Quit and reopen LTC Bridge. If it keeps happening, restart the Mac (the MIDI system may be stuck)."
+            return "LTC Bridge retries automatically. If it keeps happening, restart the Mac (the MIDI system may be stuck)."
         case .midiDestinationMissing:
             return "Reconnect the device or network session, or choose “None” under “Also send to”."
         case .midiSendFailed:
