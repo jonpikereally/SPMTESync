@@ -10,10 +10,12 @@ CORE=(Sources/LTCBridge/Timecode.swift Sources/LTCBridge/LTCDecoder.swift Source
 swiftc -O -module-cache-path "$CACHE" -o "$CACHE/ltcbridge-tests" $CORE Sources/LTCBridge/MIDIOut.swift tests/unit/main.swift
 swiftc -O -module-cache-path "$CACHE" -o "$CACHE/ltcbridge-realtime" $CORE Sources/LTCBridge/MIDIOut.swift tests/realtime/main.swift
 swiftc -O -module-cache-path "$CACHE" -o "$CACHE/ltcbridge-lifecycle" $CORE Sources/LTCBridge/MIDIOut.swift tests/lifecycle/main.swift
+swiftc -O -module-cache-path "$CACHE" -o "$CACHE/ltcbridge-backups" Sources/LTCBridge/Backups.swift tests/backups/main.swift
 swiftc -O -module-cache-path "$CACHE" -o "$CACHE/ltcbridge-recovery" $CORE Sources/LTCBridge/MIDIOut.swift Sources/LTCBridge/Bridge.swift Sources/LTCBridge/Errors.swift tests/bridge/main.swift
 "$CACHE/ltcbridge-tests"
 "$CACHE/ltcbridge-lifecycle"
 "$CACHE/ltcbridge-recovery"
+"$CACHE/ltcbridge-backups"
 python3 tests/updater/test_installer.py
 echo
 "$CACHE/ltcbridge-realtime"

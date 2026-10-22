@@ -41,6 +41,7 @@ Codes are grouped by area: 1xx updates, 2xx audio input, 3xx MIDI output,
 | LB-110 | The downloaded update is damaged. | The published update is broken. Download the latest version from GitHub instead. |
 | LB-111 | Couldn't start installing the update. | Make sure LTC Bridge is in ~/Applications and that the folder isn't locked, then try again. |
 | LB-112 | Installing the update failed, so the previous version was kept. | Make sure LTC Bridge is in ~/Applications and that the folder isn't locked, then try again. |
+| LB-113 | Couldn't move an old backup copy of LTC Bridge out of the Applications folder. | Drag “LTC Bridge Previous.app” from your Applications folder to the Trash. It's only a backup of the previous version. |
 | LB-201 | LTC Bridge isn't allowed to use audio inputs, so it can't hear the timecode. | Turn LTC Bridge on in System Settings → Privacy & Security → Microphone, then quit and reopen it. If it's already on, turn it off and on again. |
 | LB-202 | The selected audio input isn't connected. | Plug the interface back in or start Dante Virtual Soundcard. LTC Bridge reconnects by itself as soon as the device appears. |
 | LB-203 | Couldn't start listening to the audio input. | Check that the device works in Audio MIDI Setup and isn't in use exclusively by another app, then pick it again. |

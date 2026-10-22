@@ -48,7 +48,7 @@ elif tool == "ditto":
 elif tool == "mv":
     src, dst = map(pathlib.Path, args)
     if flagged("fail-swap") and src.name == "LTC Bridge.app" and src.parent.name == "stage": sys.exit(1)
-    if flagged("fail-restore") and "Previous." in src.name: sys.exit(1)
+    if flagged("fail-restore") and src.parent.name == "Previous Version.noindex" and dst.parent.name == "Applications": sys.exit(1)
     src.rename(dst)
 elif tool == "open":
     dest = pathlib.Path(args[-1])
@@ -69,7 +69,9 @@ class InstallerTests(unittest.TestCase):
         self.stage_root.mkdir()
         self.staged = self.stage_root / "LTC Bridge.app"
         self.marker = self.root / "support/update-failed.txt"
-        self.previous = self.destination.with_name("LTC Bridge Previous.app")
+        # Updates keep the replaced version here, never beside the app.
+        self.backups = self.root / "support/Previous Version.noindex"
+        self.previous = self.backups / "LTC Bridge.app"
         tools = self.root / "tools"
         tools.mkdir()
         text = HELPER.read_text()
@@ -160,10 +162,13 @@ class InstallerTests(unittest.TestCase):
         (self.root / "fail-open").touch()
         (self.root / "fail-restore").touch()
         self.assertNotEqual(self.call("swap").returncode, 0)
-        recovery = list(self.destination.parent.glob("LTC Bridge Previous.*.app"))
+        recovery = list(self.backups.glob("LTC Bridge.*.app"))
         self.assertEqual(len(recovery), 1)
         self.assertEqual((recovery[0] / "Contents/Resources/identity").read_text(), "old")
         self.assertIn(str(recovery[0]), self.marker.read_text())
+
+    def apps_folder(self):
+        return sorted(p.name for p in self.destination.parent.iterdir())
 
     def test_success_keeps_one_working_predecessor(self):
         self.make_app(self.previous, "older")
@@ -172,8 +177,26 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(self.call("swap").returncode, 0)
         self.assertEqual((self.destination / "Contents/Resources/identity").read_text(), "new")
         self.assertEqual((self.previous / "Contents/Resources/identity").read_text(), "old")
+        self.assertEqual(sorted(p.name for p in self.backups.iterdir()), ["LTC Bridge.app"])
+        self.assertEqual(self.apps_folder(), ["LTC Bridge.app"])  # no second copy beside the app
         self.assertFalse(self.stage_root.exists())
         self.assertFalse(self.marker.exists())
+
+    def test_first_update_creates_backup_outside_applications(self):
+        self.assertEqual(self.call("prepare").returncode, 0)
+        self.assertEqual(self.call("swap").returncode, 0)
+        self.assertEqual((self.destination / "Contents/Resources/identity").read_text(), "new")
+        self.assertEqual((self.previous / "Contents/Resources/identity").read_text(), "old")
+        self.assertEqual(self.apps_folder(), ["LTC Bridge.app"])
+
+    def test_unusable_backup_folder_keeps_old_app(self):
+        self.backups.parent.mkdir(parents=True)
+        self.backups.write_text("a file where the backup folder should be")
+        self.assertEqual(self.call("prepare").returncode, 0)
+        self.assertNotEqual(self.call("swap").returncode, 0)
+        self.assert_old_kept()
+        self.assertIn("LB-112", self.marker.read_text())
+        self.assertFalse(any(c[0] in ("tccutil", "open") for c in self.calls()))
 
     def test_changed_staging_bundle_rejected_without_touching_old_app(self):
         self.assertEqual(self.call("prepare").returncode, 0)
