@@ -1,1 +1,1 @@
-{"version": "1.7", "url": "LTCBridge.zip", "notes": "\u2022 New app icon: a green timecode readout (01:00) above a line of LTC, like the LED display on show gear."}
+{"version": "1.8", "url": "LTCBridge-1.8.zip", "notes": "Fixed: right after a release, updating could fetch an older cached download (and stop with LB-110). Each release now has its own download. Fixed: updating no longer fails when LTC Bridge was opened straight from a download; the update goes to ~/Applications."}

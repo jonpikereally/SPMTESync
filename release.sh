@@ -112,8 +112,13 @@ README
 mkdir -p updates
 (cd "$DIST" && ditto -c -k --norsrc --noextattr --noqtn --keepParent "LTC Bridge" "$OLDPWD/updates/LTCBridge.zip.tmp")
 mv -f updates/LTCBridge.zip.tmp updates/LTCBridge.zip
+# The feed points at a copy named for this version: raw.githubusercontent.com
+# caches each file for ~5 minutes, so a fixed name could hand the updater the
+# previous zip right after a release. The plain-named zip stays for download links.
+find updates -name "LTCBridge-*.zip" -delete
+cp updates/LTCBridge.zip "updates/LTCBridge-$VERSION.zip"
 # Manifest last, so a checking app never sees it pointing at a half-written zip.
-/usr/bin/python3 -c 'import json,sys; print(json.dumps({"version": sys.argv[1], "url": "LTCBridge.zip", "notes": sys.argv[2]}))' \
+/usr/bin/python3 -c 'import json,sys; print(json.dumps({"version": sys.argv[1], "url": "LTCBridge-" + sys.argv[1] + ".zip", "notes": sys.argv[2]}))' \
   "$VERSION" "${UPDATE_NOTES:-}" > updates/latest.json.tmp
 mv -f updates/latest.json.tmp updates/latest.json
 

@@ -127,7 +127,7 @@ final class Updater {
             let fm = FileManager.default
             let work = fm.temporaryDirectory
                 .appendingPathComponent("LTCBridge-update-\(UUID().uuidString)", isDirectory: true)
-            let destination = Bundle.main.bundleURL
+            let destination = Self.installDestination
             // Staging beside the app makes the final rename atomic on its volume.
             let stagingRoot = destination.deletingLastPathComponent()
                 .appendingPathComponent(".LTCBridge-install-\(UUID().uuidString)", isDirectory: true)
@@ -165,6 +165,8 @@ final class Updater {
                     guard let trustedScript = Bundle.main.url(forResource: "InstallBundle", withExtension: "sh") else {
                         throw AppError(.updateInstallerFailed, "The installed app is missing its update helper.")
                     }
+                    // ~/Applications may not exist yet when the old copy ran from App Translocation.
+                    try fm.createDirectory(at: stagingRoot.deletingLastPathComponent(), withIntermediateDirectories: true)
                     try fm.createDirectory(at: stagingRoot, withIntermediateDirectories: false)
                     try fm.copyItem(at: trustedScript, to: script)
                     try Self.prepare(script: script, app: newApp, stagedApp: stagedApp,
@@ -245,6 +247,17 @@ final class Updater {
             let code = parts.first.flatMap(ErrorCode.init(rawValue:)) ?? .updateInstallerFailed
             throw AppError(code, parts.count == 2 ? parts[1] : text)
         }
+    }
+
+    /// Where the update goes: the running app's own location, except when macOS
+    /// runs it from a read-only App Translocation copy (opened straight from a
+    /// download), which can't be replaced. Then it goes to ~/Applications.
+    static var installDestination: URL {
+        let here = Bundle.main.bundleURL
+        guard here.path.contains("/AppTranslocation/") else { return here }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Applications", isDirectory: true)
+            .appendingPathComponent(here.lastPathComponent)
     }
 
     private static func findApp(in dir: URL) -> URL? {
