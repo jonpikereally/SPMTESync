@@ -70,7 +70,7 @@ of the incoming LTC, with quarter-frame jitter around 0.1 ms.
 ```bash
 ./build.sh      # local build → "LTC Bridge.app"
 ./test.sh       # decoder + MTC tests, then a real-time run (CoreMIDI part needs a non-sandboxed shell)
-UPDATE_NOTES="What changed" ./release.sh   # universal build into updates/, then commit + push
+UPDATE_NOTES="What changed" ./release.sh   # Apple silicon build into updates/, then commit + push
 ```
 
 Errors carry `LB-xxx` codes; see [ERRORS.md](ERRORS.md).

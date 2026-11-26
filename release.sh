@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Build a release: universal (Apple Silicon + Intel) app with an installer,
+# Build a release: Apple silicon app with an installer,
 # written to updates/LTCBridge.zip + updates/latest.json. Committing and
 # pushing updates/ ships it: every installed copy's "Check for Updates" reads
 # latest.json from this repo on GitHub.
@@ -32,18 +32,15 @@ enum AppVersion {
 SWIFT
 CACHE="${TMPDIR:-/tmp}/ltcbridge-modcache"
 mkdir -p "$CACHE"
-echo "Building arm64…"
+echo "Building (Apple silicon)…"
 swiftc -O -target arm64-apple-macos13 -module-cache-path "$CACHE" \
   -o "$CACHE/LTCBridge-arm64" Sources/LTCBridge/*.swift
-echo "Building x86_64…"
-swiftc -O -target x86_64-apple-macos13 -module-cache-path "$CACHE-x86" \
-  -o "$CACHE/LTCBridge-x86_64" Sources/LTCBridge/*.swift
 
 DIST="$CACHE/dist"
 rm -rf "$DIST"
 APP="$DIST/LTC Bridge/LTC Bridge.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-lipo -create -output "$APP/Contents/MacOS/LTCBridge" "$CACHE/LTCBridge-arm64" "$CACHE/LTCBridge-x86_64"
+cp "$CACHE/LTCBridge-arm64" "$APP/Contents/MacOS/LTCBridge"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp Resources/InstallBundle.sh "$APP/Contents/Resources/InstallBundle.sh"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
